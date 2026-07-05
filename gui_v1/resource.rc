@@ -1,0 +1,2 @@
+#include <winuser.h>
+1 CREATEPROCESS_MANIFEST_RESOURCE_ID MOVEABLE PURE "app.manifest"

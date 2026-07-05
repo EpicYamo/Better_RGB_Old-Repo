@@ -1,0 +1,3 @@
+v1: gcc rgb_engine_v1.c C:\dev\hidapi\windows\hid.c -IC:\dev\hidapi\hidapi -o rgb_engine_v1.exe -lsetupapi -lhid -lm  
+v2: gcc rgb_engine_v2.c C:\dev\hidapi\windows\hid.c -IC:\dev\hidapi\hidapi -o rgb_engine_v2.exe -lsetupapi -lhid -lm  
+v3: gcc rgb_engine_v3.c C:\dev\hidapi\windows\hid.c -IC:\dev\hidapi\hidapi -o rgb_engine_v3.exe -lsetupapi -lhid -lm -mwindows -lcomdlg32
