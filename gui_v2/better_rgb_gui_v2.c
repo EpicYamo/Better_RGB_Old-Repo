@@ -263,6 +263,9 @@ int compute_prob_count(int target, int minCount, int maxCount) {
 }
 
 double get_key_x(const KeyEntry *k) {
+    // MANUAL OVERRIDES (hand-tuned by observation): these keys sit after wide keys
+    // (Space etc.) in their row, so their raw column index doesn't reflect their
+    // true physical x position. Row is unaffected by this table.
     if (strcmp(k->name,"AltGr")==0)         return 10.5;
     if (strcmp(k->name,"CopilotKey")==0)    return 11.5;
     if (strcmp(k->name,"ArrowUp")==0)       return 13.0;
@@ -670,15 +673,35 @@ int horizontal_zone_for_row(int row, int zoneCount) {
         case 3: if (row <= 1) return 0; if (row <= 4) return 1; return 2;
         case 4: if (row == 0) return 0; if (row <= 2) return 1; if (row <= 4) return 2; return 3;
         case 5: if (row == 0) return 0; if (row == 1) return 1; if (row == 2) return 2; if (row <= 4) return 3; return 4;
+        case 6: if (row == 0) return 0; if (row == 1) return 1; if (row == 2) return 2; if (row == 3) return 3; if (row == 4) return 4; return 5;
     }
     return 0;
 }
 
 DWORD WINAPI effect_static(LPVOID p) {
     (void)p;
+    // Rank each key by physical x once, so vertical zones can be divided by EQUAL KEY COUNT
+    // rather than equal physical width (the keyboard isn't evenly populated left-to-right,
+    // so equal-width zones would leave sparse zones on the right, e.g. around the numpad).
+    static int xRank[KEYMAP_COUNT];
+    static int xRankReady = 0;
+    if (!xRankReady) {
+        int idx[KEYMAP_COUNT];
+        for (int i=0;i<(int)KEYMAP_COUNT;i++) idx[i] = i;
+        for (int i=1;i<(int)KEYMAP_COUNT;i++) {
+            int cur = idx[i];
+            double curX = get_key_x(&KEYMAP[cur]);
+            int j = i;
+            while (j > 0 && get_key_x(&KEYMAP[idx[j-1]]) > curX) { idx[j] = idx[j-1]; j--; }
+            idx[j] = cur;
+        }
+        for (int i=0;i<(int)KEYMAP_COUNT;i++) xRank[idx[i]] = i;
+        xRankReady = 1;
+    }
+
     while (!g_stopFlag) {
         int layout = (int)g_staticLayout;
-        int maxZones = (layout == 0) ? 5 : 10;
+        int maxZones = (layout == 0) ? 6 : 10;
         int zoneCount = (int)g_staticZoneCount;
         if (zoneCount < 1) zoneCount = 1;
         if (zoneCount > maxZones) zoneCount = maxZones;
@@ -690,11 +713,8 @@ DWORD WINAPI effect_static(LPVOID p) {
                 if (layout == 0) {
                     zone = horizontal_zone_for_row(KEYMAP[i].row, zoneCount);
                 } else {
-                    double x = get_key_x(&KEYMAP[i]);
-                    double t = x / 20.0;
-                    if (t < 0) t = 0;
-                    if (t > 0.999) t = 0.999;
-                    zone = (int)(t * zoneCount);
+                    zone = (xRank[i] * zoneCount) / (int)KEYMAP_COUNT;
+                    if (zone >= zoneCount) zone = zoneCount - 1;
                 }
             }
             COLORREF c = g_staticColors[zone];
@@ -1066,7 +1086,7 @@ void invalidate_group(HWND *arr, int count) {
 
 void refresh_static_ui(void) {
     int layout = (int)g_staticLayout;
-    int maxZones = (layout == 0) ? 5 : 10;
+    int maxZones = (layout == 0) ? 6 : 10;
     int zc = (int)g_staticZoneCount;
     if (zc > maxZones) zc = maxZones;
     if (zc < 1) zc = 1;
@@ -1244,12 +1264,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             // --- Static panel ---
             g_panelStatic[g_panelStaticCount++] = mk_label(hwnd, L"Layout:", 20, 105, 200, 20);
-            g_btnStaticHoriz = mk_button(hwnd, L"Horizontal", IDC_BTN_STATIC_HORIZ, 20, 125, 165, 32);
-            g_btnStaticVert = mk_button(hwnd, L"Vertical", IDC_BTN_STATIC_VERT, 195, 125, 165, 32);
+            g_btnStaticHoriz = mk_button(hwnd, L"Horizontal", IDC_BTN_STATIC_HORIZ, 20, 125, 160, 32);
+            HWND btnStaticVert = mk_button(hwnd, L"Vertical", IDC_BTN_STATIC_VERT, 190, 125, 160, 32);
+            g_btnStaticVert = btnStaticVert;
             g_panelStatic[g_panelStaticCount++] = g_btnStaticHoriz;
             g_panelStatic[g_panelStaticCount++] = g_btnStaticVert;
             g_panelStatic[g_panelStaticCount++] = mk_label(hwnd, L"Zone Count:", 20, 170, 200, 20);
-            g_hSliderStaticZones = mk_slider(hwnd, IDC_SLIDER_STATIC_ZONES, 20, 190, 340, 30, 1, 5, g_staticZoneCount);
+            g_hSliderStaticZones = mk_slider(hwnd, IDC_SLIDER_STATIC_ZONES, 20, 190, 340, 30, 1, 6, g_staticZoneCount);
             g_panelStatic[g_panelStaticCount++] = g_hSliderStaticZones;
             g_hComboStaticZoneSel = CreateWindow(L"COMBOBOX", L"", WS_CHILD|CBS_DROPDOWNLIST|WS_VSCROLL,
                 20, 230, 340, 150, hwnd, (HMENU)IDC_COMBO_STATIC_ZONESEL, NULL, NULL);

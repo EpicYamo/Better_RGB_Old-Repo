@@ -1,5 +1,6 @@
 // Game Garaj (Tongfang/ITE8291) Better_RGB - (GUI) VERSIYONU
 // Version 1
+
 #define UNICODE
 #define _UNICODE
 #include <windows.h>
