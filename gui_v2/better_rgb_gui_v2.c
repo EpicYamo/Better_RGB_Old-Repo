@@ -246,14 +246,14 @@ int compute_prob_count(int target, int minCount, int maxCount) {
 }
 
 double get_key_x(const KeyEntry *k) {
-    if (strcmp(k->name,"AltGr")==0)         return 11.5;
-    if (strcmp(k->name,"CopilotKey")==0)    return 13.0;
-    if (strcmp(k->name,"ArrowUp")==0)       return 14.5;
-    if (strcmp(k->name,"ArrowLeft")==0)     return 13.5;
-    if (strcmp(k->name,"ArrowDown")==0)     return 14.5;
-    if (strcmp(k->name,"ArrowRight")==0)    return 15.5;
-    if (strcmp(k->name,"Numpad0")==0)       return 17.0;
-    if (strcmp(k->name,"NumpadDecimal")==0) return 18.5;
+    if (strcmp(k->name,"AltGr")==0)         return 10.5;
+    if (strcmp(k->name,"CopilotKey")==0)    return 11.5;
+    if (strcmp(k->name,"ArrowUp")==0)       return 13.0;
+    if (strcmp(k->name,"ArrowLeft")==0)     return 12.0;
+    if (strcmp(k->name,"ArrowDown")==0)     return 13.0;
+    if (strcmp(k->name,"ArrowRight")==0)    return 14.0;
+    if (strcmp(k->name,"Numpad0")==0)       return 15.0;
+    if (strcmp(k->name,"NumpadDecimal")==0) return 16.0;
 
     const double GAP = 1.5;
     if (strncmp(k->name, "Numpad", 6) == 0 || strcmp(k->name, "NumLock") == 0) return k->col + GAP;
