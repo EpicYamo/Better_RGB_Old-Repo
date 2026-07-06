@@ -996,8 +996,8 @@ void draw_button_ex(LPDRAWITEMSTRUCT dis, BOOL useCustomColor, COLORREF customCo
 void draw_selector_button(LPDRAWITEMSTRUCT dis, BOOL isActive) {
     HDC hdc = dis->hDC;
     RECT rc = dis->rcItem;
-    wchar_t text[8];
-    GetWindowText(dis->hwndItem, text, 8);
+    wchar_t text[64];
+    GetWindowText(dis->hwndItem, text, 64);
 
     COLORREF bg = isActive ? CLR_ACCENT : CLR_PANEL;
     COLORREF border = isActive ? CLR_ACCENT_LT : CLR_BORDER;
@@ -1264,18 +1264,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             // --- Static panel ---
             g_panelStatic[g_panelStaticCount++] = mk_label(hwnd, L"Layout:", 20, 105, 200, 20);
-            g_btnStaticHoriz = mk_button(hwnd, L"Horizontal", IDC_BTN_STATIC_HORIZ, 20, 125, 160, 32);
-            HWND btnStaticVert = mk_button(hwnd, L"Vertical", IDC_BTN_STATIC_VERT, 190, 125, 160, 32);
+            g_btnStaticHoriz = mk_button(hwnd, L"Horizontal", IDC_BTN_STATIC_HORIZ, 20, 125, 165, 32);
+            HWND btnStaticVert = mk_button(hwnd, L"Vertical", IDC_BTN_STATIC_VERT, 195, 125, 165, 32);
             g_btnStaticVert = btnStaticVert;
             g_panelStatic[g_panelStaticCount++] = g_btnStaticHoriz;
             g_panelStatic[g_panelStaticCount++] = g_btnStaticVert;
-            g_panelStatic[g_panelStaticCount++] = mk_label(hwnd, L"Zone Count:", 20, 170, 200, 20);
-            g_hSliderStaticZones = mk_slider(hwnd, IDC_SLIDER_STATIC_ZONES, 20, 190, 340, 30, 1, 6, g_staticZoneCount);
+            g_panelStatic[g_panelStaticCount++] = mk_label(hwnd, L"Zone Count:", 20, 165, 200, 20);
+            g_hSliderStaticZones = mk_slider(hwnd, IDC_SLIDER_STATIC_ZONES, 20, 185, 340, 30, 1, 6, g_staticZoneCount);
             g_panelStatic[g_panelStaticCount++] = g_hSliderStaticZones;
             g_hComboStaticZoneSel = CreateWindow(L"COMBOBOX", L"", WS_CHILD|CBS_DROPDOWNLIST|WS_VSCROLL,
-                20, 230, 340, 150, hwnd, (HMENU)IDC_COMBO_STATIC_ZONESEL, NULL, NULL);
+                20, 225, 340, 150, hwnd, (HMENU)IDC_COMBO_STATIC_ZONESEL, NULL, NULL);
             g_panelStatic[g_panelStaticCount++] = g_hComboStaticZoneSel;
-            g_btnStaticColor = mk_button(hwnd, L"Select Color", IDC_BTN_STATIC_COLOR, 20, 270, 340, 36);
+            g_btnStaticColor = mk_button(hwnd, L"Select Color", IDC_BTN_STATIC_COLOR, 20, 265, 340, 36);
             g_panelStatic[g_panelStaticCount++] = g_btnStaticColor;
 
             // --- Always-visible: brightness ---
