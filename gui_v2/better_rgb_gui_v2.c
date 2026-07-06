@@ -29,7 +29,8 @@
 #define MODE_FLAME     6
 #define MODE_RAIN      7
 #define MODE_MATRIX    8
-#define MODE_COUNT    9
+#define MODE_STATIC    9
+#define MODE_COUNT    10
 
 // Control IDs
 #define IDC_COMBO_MODE       200
@@ -73,6 +74,12 @@
 #define IDC_MATRIX_COLORCNT_BASE 430 // 430..432 for values 1-3
 #define IDC_COMBO_MXSTYLE     282
 #define IDC_MATRIX_COLOR_BASE 285 // 285..287 for up to 3 color buttons
+
+#define IDC_BTN_STATIC_HORIZ    500
+#define IDC_BTN_STATIC_VERT     501
+#define IDC_SLIDER_STATIC_ZONES 502
+#define IDC_COMBO_STATIC_ZONESEL 503
+#define IDC_BTN_STATIC_COLOR    504
 
 // ---------------------------------------------------------------
 // KEYMAP
@@ -162,6 +169,15 @@ static HWND g_matrixDensityBtn[5];
 static HWND g_matrixColorCountBtn[3];
 static HWND g_hComboMatrixStyle;
 
+static volatile LONG g_staticLayout = 0;     // 0 = horizontal, 1 = vertical
+static volatile LONG g_staticZoneCount = 1;
+static COLORREF g_staticColors[10] = {
+    RGB(255,255,255), RGB(255,0,0), RGB(0,255,0), RGB(0,0,255), RGB(255,255,0),
+    RGB(255,0,255), RGB(0,255,255), RGB(255,140,0), RGB(140,0,255), RGB(0,140,140)
+};
+static volatile LONG g_staticActiveZone = 0;
+static HWND g_btnStaticHoriz, g_btnStaticVert, g_hSliderStaticZones, g_hComboStaticZoneSel, g_btnStaticColor;
+
 #define WM_TRAYICON (WM_USER + 1)
 #define IDC_TRAY_RESTORE 900
 #define IDC_TRAY_EXIT    901
@@ -182,6 +198,7 @@ static HWND g_panelLightning[MAX_PANEL_CTRLS]; static int g_panelLightningCount 
 static HWND g_panelFlame[MAX_PANEL_CTRLS];  static int g_panelFlameCount = 0;
 static HWND g_panelRain[MAX_PANEL_CTRLS];   static int g_panelRainCount = 0;
 static HWND g_panelMatrix[MAX_PANEL_CTRLS]; static int g_panelMatrixCount = 0;
+static HWND g_panelStatic[MAX_PANEL_CTRLS]; static int g_panelStaticCount = 0;
 
 #define CLR_BG        RGB(24,24,28)
 #define CLR_PANEL     RGB(45,45,52)
@@ -646,6 +663,49 @@ DWORD WINAPI effect_matrix(LPVOID p) {
     return 0;
 }
 
+int horizontal_zone_for_row(int row, int zoneCount) {
+    switch (zoneCount) {
+        case 1: return 0;
+        case 2: return (row <= 3) ? 0 : 1;
+        case 3: if (row <= 1) return 0; if (row <= 4) return 1; return 2;
+        case 4: if (row == 0) return 0; if (row <= 2) return 1; if (row <= 4) return 2; return 3;
+        case 5: if (row == 0) return 0; if (row == 1) return 1; if (row == 2) return 2; if (row <= 4) return 3; return 4;
+    }
+    return 0;
+}
+
+DWORD WINAPI effect_static(LPVOID p) {
+    (void)p;
+    while (!g_stopFlag) {
+        int layout = (int)g_staticLayout;
+        int maxZones = (layout == 0) ? 5 : 10;
+        int zoneCount = (int)g_staticZoneCount;
+        if (zoneCount < 1) zoneCount = 1;
+        if (zoneCount > maxZones) zoneCount = maxZones;
+
+        unsigned char buf[BUF_SIZE] = {0};
+        for (size_t i=0;i<KEYMAP_COUNT;i++) {
+            int zone = 0;
+            if (zoneCount > 1) {
+                if (layout == 0) {
+                    zone = horizontal_zone_for_row(KEYMAP[i].row, zoneCount);
+                } else {
+                    double x = get_key_x(&KEYMAP[i]);
+                    double t = x / 20.0;
+                    if (t < 0) t = 0;
+                    if (t > 0.999) t = 0.999;
+                    zone = (int)(t * zoneCount);
+                }
+            }
+            COLORREF c = g_staticColors[zone];
+            set_key(buf, KEYMAP[i].offset, GetRValue(c), GetGValue(c), GetBValue(c));
+        }
+        send_frame(buf);
+        Sleep(FRAME_DELAY_MS);
+    }
+    return 0;
+}
+
 DWORD WINAPI effect_sparkle(LPVOID p) {
     (void)p;
     int *life = (int*)calloc(KEYMAP_COUNT, sizeof(int));
@@ -797,6 +857,7 @@ LPTHREAD_START_ROUTINE mode_to_fn(int mode) {
         case MODE_FLAME: return effect_flame;
         case MODE_RAIN: return effect_rain;
         case MODE_MATRIX: return effect_matrix;
+        case MODE_STATIC: return effect_static;
     }
     return NULL;
 }
@@ -812,6 +873,7 @@ const wchar_t* mode_to_label(int mode) {
         case MODE_FLAME: return L"Active Mode: Flame";
         case MODE_RAIN: return L"Active Mode: Rain";
         case MODE_MATRIX: return L"Active Mode: Matrix";
+        case MODE_STATIC: return L"Active Mode: Static";
     }
     return L"Active Mode: None";
 }
@@ -841,6 +903,7 @@ void show_panel_for_mode(int mode) {
     show_only(g_panelFlame, g_panelFlameCount, mode == MODE_FLAME);
     show_only(g_panelRain, g_panelRainCount, mode == MODE_RAIN);
     show_only(g_panelMatrix, g_panelMatrixCount, mode == MODE_MATRIX);
+    show_only(g_panelStatic, g_panelStaticCount, mode == MODE_STATIC);
     HWND top = GetAncestor(g_panelBreath[0], GA_ROOT);
     if (top) { InvalidateRect(top, NULL, TRUE); UpdateWindow(top); }
 }
@@ -938,6 +1001,29 @@ void draw_button(LPDRAWITEMSTRUCT dis) {
     draw_button_ex(dis, FALSE, 0);
 }
 
+void draw_labeled_color_button(LPDRAWITEMSTRUCT dis, COLORREF color) {
+    HDC hdc = dis->hDC;
+    RECT rc = dis->rcItem;
+    wchar_t text[64];
+    GetWindowText(dis->hwndItem, text, 64);
+
+    HBRUSH br = CreateSolidBrush(color);
+    HPEN pen = CreatePen(PS_SOLID, 1, CLR_BORDER);
+    HGDIOBJ oldBr = SelectObject(hdc, br);
+    HGDIOBJ oldPen = SelectObject(hdc, pen);
+    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 10, 10);
+    SelectObject(hdc, oldBr);
+    SelectObject(hdc, oldPen);
+    DeleteObject(br);
+    DeleteObject(pen);
+
+    // pick black or white text based on background luminance for contrast
+    double lum = (0.299*GetRValue(color) + 0.587*GetGValue(color) + 0.114*GetBValue(color));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, (lum > 140) ? RGB(0,0,0) : RGB(255,255,255));
+    DrawText(hdc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
 BOOL CALLBACK SetFontOnChild(HWND hwnd, LPARAM lFont) {
     SendMessage(hwnd, WM_SETFONT, (WPARAM)lFont, TRUE);
     return TRUE;
@@ -978,6 +1064,34 @@ void invalidate_group(HWND *arr, int count) {
     for (int i=0;i<count;i++) InvalidateRect(arr[i], NULL, TRUE);
 }
 
+void refresh_static_ui(void) {
+    int layout = (int)g_staticLayout;
+    int maxZones = (layout == 0) ? 5 : 10;
+    int zc = (int)g_staticZoneCount;
+    if (zc > maxZones) zc = maxZones;
+    if (zc < 1) zc = 1;
+    g_staticZoneCount = zc;
+
+    SendMessage(g_hSliderStaticZones, TBM_SETRANGE, TRUE, MAKELONG(1, maxZones));
+    SendMessage(g_hSliderStaticZones, TBM_SETPOS, TRUE, zc);
+
+    SendMessage(g_hComboStaticZoneSel, CB_RESETCONTENT, 0, 0);
+    for (int i=0;i<zc;i++) {
+        wchar_t buf[16];
+        wsprintf(buf, L"Color %d", i+1);
+        SendMessage(g_hComboStaticZoneSel, CB_ADDSTRING, 0, (LPARAM)buf);
+    }
+    if (g_staticActiveZone >= zc) g_staticActiveZone = 0;
+    SendMessage(g_hComboStaticZoneSel, CB_SETCURSEL, g_staticActiveZone, 0);
+    ShowWindow(g_hComboStaticZoneSel, (zc > 1) ? SW_SHOW : SW_HIDE);
+
+    InvalidateRect(g_btnStaticColor, NULL, TRUE);
+    InvalidateRect(g_btnStaticHoriz, NULL, TRUE);
+    InvalidateRect(g_btnStaticVert, NULL, TRUE);
+    HWND top = GetAncestor(g_btnStaticColor, GA_ROOT);
+    if (top) { InvalidateRect(top, NULL, TRUE); UpdateWindow(top); }
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE: {
@@ -1010,6 +1124,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SendMessage(g_hComboMode, CB_ADDSTRING, 0, (LPARAM)L"Flame");
             SendMessage(g_hComboMode, CB_ADDSTRING, 0, (LPARAM)L"Rain");
             SendMessage(g_hComboMode, CB_ADDSTRING, 0, (LPARAM)L"Matrix");
+            SendMessage(g_hComboMode, CB_ADDSTRING, 0, (LPARAM)L"Static");
 
             mk_button(hwnd, L"Stop (Turn Off Lights)", IDC_BTN_STOP, 20, 55, 340, 35);
 
@@ -1127,6 +1242,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 g_panelMatrix[g_panelMatrixCount++] = g_matrixColorBtn[c];
             }
 
+            // --- Static panel ---
+            g_panelStatic[g_panelStaticCount++] = mk_label(hwnd, L"Layout:", 20, 105, 200, 20);
+            g_btnStaticHoriz = mk_button(hwnd, L"Horizontal", IDC_BTN_STATIC_HORIZ, 20, 125, 165, 32);
+            g_btnStaticVert = mk_button(hwnd, L"Vertical", IDC_BTN_STATIC_VERT, 195, 125, 165, 32);
+            g_panelStatic[g_panelStaticCount++] = g_btnStaticHoriz;
+            g_panelStatic[g_panelStaticCount++] = g_btnStaticVert;
+            g_panelStatic[g_panelStaticCount++] = mk_label(hwnd, L"Zone Count:", 20, 170, 200, 20);
+            g_hSliderStaticZones = mk_slider(hwnd, IDC_SLIDER_STATIC_ZONES, 20, 190, 340, 30, 1, 5, g_staticZoneCount);
+            g_panelStatic[g_panelStaticCount++] = g_hSliderStaticZones;
+            g_hComboStaticZoneSel = CreateWindow(L"COMBOBOX", L"", WS_CHILD|CBS_DROPDOWNLIST|WS_VSCROLL,
+                20, 230, 340, 150, hwnd, (HMENU)IDC_COMBO_STATIC_ZONESEL, NULL, NULL);
+            g_panelStatic[g_panelStaticCount++] = g_hComboStaticZoneSel;
+            g_btnStaticColor = mk_button(hwnd, L"Select Color", IDC_BTN_STATIC_COLOR, 20, 270, 340, 36);
+            g_panelStatic[g_panelStaticCount++] = g_btnStaticColor;
+
             // --- Always-visible: brightness ---
             mk_label(hwnd, L"Brightness:", 20, 400, 150, 20);
             g_hSliderBright = mk_slider(hwnd, IDC_SLIDER_BRIGHT, 20, 420, 340, 30, 0, 100, g_brightness);
@@ -1139,6 +1269,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             refresh_rain_color_visibility();
             refresh_matrix_color_visibility();
+            refresh_static_ui();
             show_panel_for_mode(-1); // hide all initially
 
             EnumChildWindows(hwnd, SetFontOnChild, (LPARAM)hFont);
@@ -1160,6 +1291,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 draw_selector_button(dis, (id-IDC_MATRIX_DENSITY_BASE+1) == (int)g_matrixDensityTarget);
             } else if (id >= IDC_MATRIX_COLORCNT_BASE && id < IDC_MATRIX_COLORCNT_BASE+3) {
                 draw_selector_button(dis, (id-IDC_MATRIX_COLORCNT_BASE+1) == (int)g_matrixColorCount);
+            } else if (id == IDC_BTN_STATIC_HORIZ) {
+                draw_selector_button(dis, g_staticLayout == 0);
+            } else if (id == IDC_BTN_STATIC_VERT) {
+                draw_selector_button(dis, g_staticLayout == 1);
+            } else if (id == IDC_BTN_STATIC_COLOR) {
+                draw_labeled_color_button(dis, g_staticColors[g_staticActiveZone]);
             } else {
                 draw_button(dis);
             }
@@ -1201,6 +1338,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             else if (GetDlgCtrlID(ctrl) == IDC_SLIDER_FLSMOOTH) g_flameSmooth = (LONG)SendMessage(ctrl, TBM_GETPOS, 0, 0);
             else if (GetDlgCtrlID(ctrl) == IDC_SLIDER_RNSPEED) g_rainSpeed = (LONG)SendMessage(ctrl, TBM_GETPOS, 0, 0);
             else if (GetDlgCtrlID(ctrl) == IDC_SLIDER_MXSPEED) g_matrixSpeed = (LONG)SendMessage(ctrl, TBM_GETPOS, 0, 0);
+            else if (GetDlgCtrlID(ctrl) == IDC_SLIDER_STATIC_ZONES) {
+                g_staticZoneCount = (LONG)SendMessage(ctrl, TBM_GETPOS, 0, 0);
+                refresh_static_ui();
+            }
             return 0;
         }
 
@@ -1211,12 +1352,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     show_panel_for_mode(sel);
                     if (sel == MODE_RAIN) refresh_rain_color_visibility();
                     if (sel == MODE_MATRIX) refresh_matrix_color_visibility();
+                    if (sel == MODE_STATIC) refresh_static_ui();
                     start_mode(sel);
                 }
                 return 0;
             }
             if (HIWORD(wp) == CBN_SELCHANGE && (HWND)lp == g_hComboMatrixStyle) {
                 g_matrixStyle = (LONG)SendMessage(g_hComboMatrixStyle, CB_GETCURSEL, 0, 0);
+                return 0;
+            }
+            if (HIWORD(wp) == CBN_SELCHANGE && (HWND)lp == g_hComboStaticZoneSel) {
+                g_staticActiveZone = (LONG)SendMessage(g_hComboStaticZoneSel, CB_GETCURSEL, 0, 0);
+                InvalidateRect(g_btnStaticColor, NULL, TRUE);
                 return 0;
             }
             {
@@ -1253,6 +1400,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     g_matrixColorCount = cid - IDC_MATRIX_COLORCNT_BASE + 1;
                     invalidate_group(g_matrixColorCountBtn, 3);
                     refresh_matrix_color_visibility();
+                    return 0;
+                }
+                if (cid == IDC_BTN_STATIC_HORIZ) { g_staticLayout = 0; refresh_static_ui(); return 0; }
+                if (cid == IDC_BTN_STATIC_VERT)  { g_staticLayout = 1; refresh_static_ui(); return 0; }
+                if (cid == IDC_BTN_STATIC_COLOR) {
+                    g_staticColors[g_staticActiveZone] = pick_color(hwnd, g_staticColors[g_staticActiveZone]);
+                    InvalidateRect(g_btnStaticColor, NULL, TRUE);
                     return 0;
                 }
             }

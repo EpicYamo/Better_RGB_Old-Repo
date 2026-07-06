@@ -1,5 +1,0 @@
-static single color for whole keyboard.
-static color per-key selection menu
-
-
-custom animation editor coming with v3 soon !
