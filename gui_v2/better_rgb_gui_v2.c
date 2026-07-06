@@ -1,5 +1,6 @@
 // Game Garaj (Tongfang/ITE8291) Better_RGB - (GUI) VERSIYONU
 // Version 2
+
 #define UNICODE
 #define _UNICODE
 #include <windows.h>
@@ -107,7 +108,9 @@ static const KeyEntry KEYMAP[] = {
 };
 #define KEYMAP_COUNT (sizeof(KEYMAP)/sizeof(KEYMAP[0]))
 
+// ---------------------------------------------------------------
 // GLOBAL STATE
+// ---------------------------------------------------------------
 static hid_device *g_h = NULL;
 static HANDLE g_effectThread = NULL;
 static volatile LONG g_stopFlag = 0;
@@ -188,7 +191,9 @@ static HWND g_panelMatrix[MAX_PANEL_CTRLS]; static int g_panelMatrixCount = 0;
 #define CLR_TEXT      RGB(235,235,240)
 #define CLR_BORDER    RGB(70,70,80)
 
+// ---------------------------------------------------------------
 // PROTOCOL LAYER
+// ---------------------------------------------------------------
 int enter_custom_mode(void) {
     unsigned char step1[9] = {0x00,0x12,0x00,0x03,0x00,0x00,0x00,0x00,0x00};
     if (hid_send_feature_report(g_h, step1, 9) < 0) return -1;
@@ -241,6 +246,18 @@ int compute_prob_count(int target, int minCount, int maxCount) {
 }
 
 double get_key_x(const KeyEntry *k) {
+    // MANUAL OVERRIDES: these keys sit after wide keys (Space etc.) in their row,
+    // so their raw column index doesn't reflect their true physical x position.
+    // Tune these numbers by feel: higher = further right. Row is unaffected by this table.
+    if (strcmp(k->name,"AltGr")==0)         return 11.5;
+    if (strcmp(k->name,"CopilotKey")==0)    return 13.0;
+    if (strcmp(k->name,"ArrowUp")==0)       return 15.5;
+    if (strcmp(k->name,"ArrowLeft")==0)     return 14.5;
+    if (strcmp(k->name,"ArrowDown")==0)     return 15.5;
+    if (strcmp(k->name,"ArrowRight")==0)    return 16.5;
+    if (strcmp(k->name,"Numpad0")==0)       return 18.0;
+    if (strcmp(k->name,"NumpadDecimal")==0) return 19.5;
+
     const double GAP = 1.5;
     if (strncmp(k->name, "Numpad", 6) == 0 || strcmp(k->name, "NumLock") == 0) return k->col + GAP;
     if (strcmp(k->name,"FnLockCam")==0 || strcmp(k->name,"PrtSc")==0 || strcmp(k->name,"Del")==0 ||
@@ -249,7 +266,9 @@ double get_key_x(const KeyEntry *k) {
     return (double)k->col;
 }
 
+// ---------------------------------------------------------------
 // EFFECTS
+// ---------------------------------------------------------------
 DWORD WINAPI effect_breathing(LPVOID p) {
     (void)p;
     double t = 0.0;
@@ -753,7 +772,9 @@ DWORD WINAPI effect_reactive(LPVOID p) {
     return 0;
 }
 
+// ---------------------------------------------------------------
 // THREAD MANAGEMENT
+// ---------------------------------------------------------------
 void set_status(const wchar_t *text) {
     if (g_hStatus) SetWindowText(g_hStatus, text);
 }
@@ -806,7 +827,9 @@ void start_mode(int mode) {
     set_status(mode_to_label(mode));
 }
 
+// ---------------------------------------------------------------
 // PANEL VISIBILITY
+// ---------------------------------------------------------------
 void show_only(HWND *arr, int count, BOOL show) {
     for (int i = 0; i < count; i++) ShowWindow(arr[i], show ? SW_SHOW : SW_HIDE);
 }
@@ -825,7 +848,9 @@ void show_panel_for_mode(int mode) {
     if (top) { InvalidateRect(top, NULL, TRUE); UpdateWindow(top); }
 }
 
+// ---------------------------------------------------------------
 // COLOR SWATCH
+// ---------------------------------------------------------------
 LRESULT CALLBACK SwatchProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_PAINT) {
         PAINTSTRUCT ps;
@@ -859,7 +884,9 @@ COLORREF pick_color(HWND hwnd, COLORREF initial) {
     return initial;
 }
 
+// ---------------------------------------------------------------
 // OWNER-DRAW BUTTON PAINTING
+// ---------------------------------------------------------------
 void draw_button_ex(LPDRAWITEMSTRUCT dis, BOOL useCustomColor, COLORREF customColor) {
     HDC hdc = dis->hDC;
     RECT rc = dis->rcItem;
@@ -919,7 +946,9 @@ BOOL CALLBACK SetFontOnChild(HWND hwnd, LPARAM lFont) {
     return TRUE;
 }
 
+// ---------------------------------------------------------------
 // HELPERS TO BUILD UI
+// ---------------------------------------------------------------
 HWND mk_label(HWND parent, const wchar_t *text, int x, int y, int w, int h) {
     return CreateWindow(L"STATIC", text, WS_CHILD|WS_VISIBLE, x,y,w,h, parent, NULL, NULL, NULL);
 }
@@ -935,7 +964,9 @@ HWND mk_button(HWND parent, const wchar_t *text, int id, int x, int y, int w, in
     return CreateWindow(L"BUTTON", text, WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, x,y,w,h, parent, (HMENU)(INT_PTR)id, NULL, NULL);
 }
 
+// ---------------------------------------------------------------
 // MAIN WINDOW
+// ---------------------------------------------------------------
 void refresh_rain_color_visibility(void) {
     for (int i=0;i<5;i++) ShowWindow(g_rainColorBtn[i], (i < (int)g_rainColorCount) ? SW_SHOW : SW_HIDE);
     HWND top = GetAncestor(g_rainColorBtn[0], GA_ROOT);

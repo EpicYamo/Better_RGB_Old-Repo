@@ -1,0 +1,110 @@
+# Better RGB by TheYamo
+
+A custom per-key RGB control application for Tongfang/ITE8291-based gaming laptops (sold under various brand names, including "Game Garaj Slayer" in Turkey, and similar chassis sold as XMG Apex 16 Max, Schenker, Erazer Major, and other rebrands of the same Tongfang barebone).
+
+Built from scratch in C, using a fully reverse-engineered USB HID protocol — no vendor SDK, no leaked source code, just a USB sniffer, patience, and a lot of trial and error.
+
+---
+
+## Why this project exists
+
+The laptop in question ships with a vendor RGB control application (referred to here as "GCUBridge" / Control Center) that supports per-key RGB lighting. The hardware is capable — but the software wasn't. Built-in animations (wave, fireworks, breathing) felt noticeably choppy, especially compared to a Razer Blade 14 also owned by the developer, whose Synapse software produced buttery-smooth per-key effects.
+
+The obvious first move was [OpenRGB](https://openrgb.org/), the open-source universal RGB controller. It detected the keyboard's USB HID interface and correctly identified it as an ITE-family controller (misreported generically as a "Clevo keyboard"), but writes to it had no effect — the keyboard lighting simply didn't respond, regardless of whether the vendor service was running or stopped.
+
+With no existing OpenRGB support for this exact device/firmware revision and no public documentation of the protocol, the only path forward was to reverse-engineer it from scratch.
+
+## The developer's background
+
+No prior Windows application development experience. Background in:
+- C (through 42 School's project curriculum — minishell, minirt, and currently webserv)
+- Embedded systems and hardware, from hobby projects: FPV drones, RC aircraft, a custom FPV head tracker, DIY Flight Contoller(basic) DIY radio transmitters and receivers
+
+That hardware/embedded background turned out to be exactly the right toolkit for this kind of protocol reverse-engineering — reading USB traffic, working with raw byte-level HID reports, and debugging hardware that occasionally locks up are all familiar territory to anyone who's built their own RC gear.
+
+## Tools used
+
+- **Wireshark + USBPcap** — capturing raw USB traffic between the vendor software and the keyboard controller
+- **Python** (for analysis, not part of the final product) — writing custom parsers for the captured `.pcapng` files, since some quirks of the USBPcap packet header format required byte-level decoding not handled cleanly by generic tools
+- **mingw-w64 / gcc** — all application code is plain C, compiled with MinGW on Windows
+- **hidapi** — the cross-platform HID library used to talk to the device from C, once the protocol was known
+- **Win32 API directly** (no framework) — window creation, owner-drawn controls, `Shell_NotifyIcon` for the system tray
+
+## The reverse-engineering process
+
+### 1. Identifying the hardware
+
+Using `USBDeview` and Windows Device Manager, the keyboard's USB identity was narrowed down to a composite device: **VID_048D, PID_600B** (ITE Tech. Inc.). The composite device exposes two HID interfaces:
+
+- **Interface 0 (MI_00)** — standard boot-keyboard interface, handles normal key input
+- **Interface 1 (MI_01)** — a vendor-defined interface (Usage Page `0xFF03`), reporting itself as `ITE Device(8291)` — this is the one that controls the RGB
+
+### 2. Capturing the protocol
+
+With the vendor RGB software running, Wireshark (via the USBPcap extcap interface) was used to capture USB traffic while manually changing colors, switching between built-in animations, and entering per-key edit mode.
+
+The capture format required manual parsing: USBPcap wraps each USB transfer in a `USBPCAP_BUFFER_PACKET_HEADER` before the pcapng encapsulation, and the header layout (bus, device, endpoint, transfer type, data length) had to be decoded by hand, byte-offset by byte-offset, cross-checking against known values (like the USB device descriptor's vendor/product ID appearing in a `GET_DESCRIPTOR` response) to validate the parsing was correct.
+
+This surfaced two distinct communication channels:
+
+- **HID Feature Reports** (`SET_REPORT`, sent as USB Control Transfers) carrying short 8-byte commands
+- **HID Output Reports** (sent as USB Interrupt Transfers on Endpoint 2) carrying 64-byte chunks — eight of these per "frame" make up a 512-byte per-key color buffer
+
+### 3. Decoding the command set
+
+By comparing the exact bytes sent for each user action (setting a solid color, switching to wave, switching to fireworks, entering custom per-key mode) against the visible result, three opcodes emerged:
+
+| Opcode | Purpose |
+|---|---|
+| `0x14` | Set a solid/static color (whole keyboard or a palette slot) |
+| `0x08` | Select active lighting mode (static, wave, firework, custom/per-key, …) |
+| `0x12` | Prepare the device for an incoming buffer / custom-mode data stream |
+
+### 4. Mapping every physical key
+
+The hardest and most time-consuming part. The 512-byte per-key buffer needed to be mapped to physical key positions, and there was no documentation for this at all.
+
+The method: reset the whole keyboard to black, then light up one key at a time (or, for efficiency, a whole physical row in sequence) while capturing USB traffic, and diff each captured frame against the previous one to see which 3-byte slot in the buffer changed. Repeated across the entire keyboard (~103 physical positions, including a full numpad, arrow cluster, and several ISO-layout-specific keys), this produced a complete key-name → byte-offset table.
+
+Along the way, this process caught and corrected several of its own early mistakes — for example, an ambiguous double-offset change in one capture was initially misread as "an accidental extra keypress," but a later, cleaner single-key test proved the *original* assumed offset was wrong entirely, and the second offset was the real one. Cross-validating every offset against multiple independent captures was essential to catching this kind of error.
+
+### 5. Talking to the device from C
+
+With the protocol decoded, [hidapi](https://github.com/libusb/hidapi) was used to replicate it from a native Windows C program: opening the correct HID interface by its enumerated path, sending the same Feature Reports and Interrupt writes, and confirming the results matched what the vendor software produced.
+
+## Challenges along the way
+
+- **The device could be locked up.** Sending malformed or too-aggressive sequences of commands (particularly repeating the "enter custom mode" preparation commands in a tight loop) could put the keyboard's embedded controller into a bad state — lighting would stop responding entirely, sometimes to *any* software, including the vendor's own. Recovery required a full EC reset (power off, disconnect charger, hold the power button for ~30 seconds to discharge residual capacitance, then power back on). This happened multiple times during development and shaped a much more cautious, incremental approach to testing new timing.
+- **Windows fighting back.** The vendor's control center software turned out to have a Scheduled Task configured to relaunch it every minute for ten minutes after login — discovered only after wondering why the vendor app kept reappearing mid-test. Disabling the scheduled task and the underlying Windows service (with recovery actions set to take no action) was necessary to get a clean, conflict-free testing environment.
+- **Finding a safe, real frame rate.** `hid_write()` returning success doesn't mean the firmware actually rendered that frame — early tests that ignored this produced a "3 frames flash, then freeze" result at high send rates. Real-world testing (timed loops, camera slow-motion review) converged on roughly 30 FPS as a reliable ceiling for this specific firmware, well above the vendor software's own animation smoothness.
+- **A missing HID Report ID byte**, the classic hidapi gotcha — both `hid_send_feature_report` and `hid_write` expect the buffer's first byte to be the Report ID, and forgetting it caused silent data misalignment before being tracked down.
+
+## What the application does
+
+A modular Win32 desktop application (no external UI framework — plain GDI, owner-drawn controls, and a manifest for modern visual styling) offering:
+
+- **Breathing** — solid color pulsing, with adjustable speed and smoothness
+- **Wave** — a moving color gradient across the keyboard with a user-adjustable angle (0–359°), computed from each key's real physical position (accounting for the numpad and navigation-cluster gaps)
+- **Sparkle** — random per-key flashes, with independently tunable speed (flash lifetime) and density (how many keys are lit at once)
+- **Reactive** — keys light up on keypress (fixed or random color) and fade out over a selectable duration (short/medium/long); uses `GetAsyncKeyState` polling with proper key-hold edge detection
+- **Wheel** — a radial rainbow rotating around the keyboard's geometric center, direction-reversible
+- **Lightning** — a smooth, falling "bolt" with adjustable travel speed, strike width, glow smoothness, and how many bolts can strike concurrently
+- **Flame** — a persistent, drifting heat simulation (not simple per-frame noise) mapped through a black→red→orange→yellow→white palette
+- **Rain** — falling colored drops with a trailing glow, adjustable density and fall speed, and a configurable multi-color palette
+- **Matrix** — four selectable sub-styles (diagonal streaks, classic vertical "digital rain" columns, laser sweep, expanding ripples), each with adjustable speed, density, and color palette
+
+All effects run on a background thread, computed entirely on the host and streamed to the keyboard live — the firmware's own built-in effects are never used.
+
+## Known limitations
+
+- The `Fn` key and the physical key sending the OEM "Copilot" shortcut produce no distinguishable input signal on Windows, so they cannot be used in Reactive mode.
+- The numpad Enter key and the main Enter key share the same Windows virtual-key code, so they can't currently be told apart in Reactive mode (both light up together).
+- The keymap was built for one specific physical keyboard layout (Turkish ISO). Other regional layouts would need their own key-mapping pass, though the underlying per-key offsets are hardware (not layout) dependent and should transfer directly — only the *labels* would need adjusting.
+
+## What's next
+
+A frame-by-frame custom animation editor is planned, letting the user design their own sequences directly rather than picking from preset effects.
+
+## Disclaimer
+
+This project is the result of independent reverse-engineering for personal/interoperability use. It is not affiliated with, endorsed by, or supported by the laptop's manufacturer or ITE Tech. Inc. Use at your own risk — direct HID communication with embedded controllers carries a small risk of triggering unexpected firmware states (see "Challenges" above); this hasn't caused any permanent damage in the course of this project, but there are no guarantees.
