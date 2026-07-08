@@ -1562,15 +1562,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
 
     hid_init();
     g_h = hid_open_path(DEVICE_PATH);
-    //if (!g_h) {
-    //    MessageBox(NULL, L"Could not open device! Make sure GCUBridge service is stopped.", L"Error", MB_OK|MB_ICONERROR);
-       //return 1;
-    //}
-    //if (enter_custom_mode() < 0) {
-     //   MessageBox(NULL, L"Could not enter per-key mode!", L"Error", MB_OK|MB_ICONERROR);
-      //  hid_close(g_h); hid_exit();
-       // return 1;
-    //}
+    if (!g_h) {
+       MessageBox(NULL, L"Could not open device! Make sure GCUBridge service is stopped.", L"Error", MB_OK|MB_ICONERROR);
+       return 1;
+    }
+    if (enter_custom_mode() < 0) {
+        MessageBox(NULL, L"Could not enter per-key mode!", L"Error", MB_OK|MB_ICONERROR);
+        hid_close(g_h); hid_exit();
+        return 1;
+    }
 
     INITCOMMONCONTROLSEX icc; icc.dwSize = sizeof(icc); icc.dwICC = ICC_BAR_CLASSES;
     InitCommonControlsEx(&icc);

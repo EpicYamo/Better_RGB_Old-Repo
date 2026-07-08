@@ -3,11 +3,15 @@
 
 #define UNICODE
 #define _UNICODE
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
 #include <windows.h>
 #include <commctrl.h>
 #include <math.h>
 #include <string.h>
 #include <time.h>
+#include <stdio.h>
 #include "hidapi.h"
 #include "resource.h"
 
@@ -208,9 +212,19 @@ static HWND g_panelStatic[MAX_PANEL_CTRLS]; static int g_panelStaticCount = 0;
 #define CLR_TEXT      RGB(235,235,240)
 #define CLR_BORDER    RGB(70,70,80)
 
-// ---------------------------------------------------------------
-// PROTOCOL LAYER
-// ---------------------------------------------------------------
+static CRITICAL_SECTION g_deviceLock;
+
+void log_event(const char *msg) {
+    FILE *f = fopen("rgb_engine_log.txt", "a");
+    if (!f) return;
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    fprintf(f, "[%02d:%02d:%02d.%03d] [thread %lu] %s\n",
+        t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
+        (unsigned long)GetCurrentThreadId(), msg);
+    fclose(f);
+}
+
 int enter_custom_mode(void) {
     unsigned char step1[9] = {0x00,0x12,0x00,0x03,0x00,0x00,0x00,0x00,0x00};
     if (hid_send_feature_report(g_h, step1, 9) < 0) return -1;
@@ -221,30 +235,63 @@ int enter_custom_mode(void) {
     return 0;
 }
 
-// v2.1: Windows sometimes invalidates our USB HID handle (most commonly after
-// sleep/resume, but occasionally on its own too) without any visible error -
-// hid_write() and hid_send_feature_report() start silently failing while the
-// app itself keeps running normally. This closes the stale handle and opens
-// a fresh one, then re-sends the "enter per-key mode" setup so the device is
-// in a known-good state again. Returns 0 on success, -1 if the device still
-// couldn't be reopened (e.g. GCUBridge lighting got re-enabled, or the
-// keyboard is genuinely not there).
 int reconnect_device(void) {
+    EnterCriticalSection(&g_deviceLock);
+    log_event("reconnect_device: starting");
+
     if (g_h) {
         hid_close(g_h);
         g_h = NULL;
     }
+
+    hid_exit();
+    Sleep(100);
+    hid_init();
+    Sleep(20);
+
     g_h = hid_open_path(DEVICE_PATH);
-    if (!g_h) return -1;
-    if (enter_custom_mode() < 0) {
-        hid_close(g_h);
-        g_h = NULL;
+    if (!g_h) {
+        log_event("reconnect_device: hid_open_path FAILED");
+        LeaveCriticalSection(&g_deviceLock);
         return -1;
     }
+    Sleep(20); // let the freshly opened handle settle before we start writing to it
+    if (enter_custom_mode() < 0) {
+        log_event("reconnect_device: enter_custom_mode FAILED");
+        hid_close(g_h);
+        g_h = NULL;
+        LeaveCriticalSection(&g_deviceLock);
+        return -1;
+    }
+    log_event("reconnect_device: success");
+    LeaveCriticalSection(&g_deviceLock);
     return 0;
 }
 
+static volatile LONG g_reconnectInProgress = 0;
+
+DWORD WINAPI reconnect_thread_proc(LPVOID p) {
+    (void)p;
+    reconnect_device();
+    InterlockedExchange(&g_reconnectInProgress, 0);
+    return 0;
+}
+
+void request_reconnect(const char *reason) {
+    char logbuf[160];
+    if (InterlockedCompareExchange(&g_reconnectInProgress, 1, 0) != 0) {
+        sprintf(logbuf, "request_reconnect(%s): skipped, one already in progress", reason);
+        log_event(logbuf);
+        return;
+    }
+    sprintf(logbuf, "request_reconnect(%s): spawning reconnect thread", reason);
+    log_event(logbuf);
+    HANDLE h = CreateThread(NULL, 0, reconnect_thread_proc, NULL, 0, NULL);
+    if (h) CloseHandle(h);
+}
+
 int send_frame(unsigned char *buf) {
+    EnterCriticalSection(&g_deviceLock);
     int bright = (int)g_brightness;
     if (bright < 100) {
         unsigned char scaled[BUF_SIZE];
@@ -253,25 +300,25 @@ int send_frame(unsigned char *buf) {
     }
     unsigned char step3[9] = {0x00,0x12,0x00,0x00,0x08,0x00,0x00,0x00,0x00};
     if (hid_send_feature_report(g_h, step3, 9) < 0) {
+        log_event("send_frame: feature report failed, attempting reconnect");
         // v2.1: first failure -> try to silently reconnect and retry THIS
         // same frame once before giving up, so a single bad moment doesn't
         // require the user to restart the app.
-        if (reconnect_device() < 0) return -1;
-        if (hid_send_feature_report(g_h, step3, 9) < 0) return -1;
+        if (reconnect_device() < 0) { LeaveCriticalSection(&g_deviceLock); return -1; }
+        if (hid_send_feature_report(g_h, step3, 9) < 0) { LeaveCriticalSection(&g_deviceLock); return -1; }
     }
     for (int i = 0; i < 8; i++) {
         unsigned char chunk[65];
         chunk[0] = 0x00;
         memcpy(chunk+1, buf + i*64, 64);
         if (hid_write(g_h, chunk, 65) < 0) {
-            if (reconnect_device() < 0) return -1;
-            // The device is back, but this frame's chunk sequence is now out
-            // of sync (we reconnected partway through). Simplest safe move:
-            // bail out of this frame - the effect loop will send a fresh,
-            // complete frame on its very next iteration anyway.
+            log_event("send_frame: chunk write failed, attempting reconnect");
+            if (reconnect_device() < 0) { LeaveCriticalSection(&g_deviceLock); return -1; }
+            LeaveCriticalSection(&g_deviceLock);
             return -1;
         }
     }
+    LeaveCriticalSection(&g_deviceLock);
     return 0;
 }
 
@@ -716,9 +763,6 @@ int horizontal_zone_for_row(int row, int zoneCount) {
 
 DWORD WINAPI effect_static(LPVOID p) {
     (void)p;
-    // Rank each key by physical x once, so vertical zones can be divided by EQUAL KEY COUNT
-    // rather than equal physical width (the keyboard isn't evenly populated left-to-right,
-    // so equal-width zones would leave sparse zones on the right, e.g. around the numpad).
     static int xRank[KEYMAP_COUNT];
     static int xRankReady = 0;
     if (!xRankReady) {
@@ -898,11 +942,6 @@ void stop_current_effect(void) {
         WaitForSingleObject(g_effectThread, 2000);
         CloseHandle(g_effectThread);
         g_effectThread = NULL;
-
-        // Stopping the effect thread only stops it from sending new frames -
-        // the LAST frame it sent stays lit on the keyboard forever otherwise.
-        // Explicitly send an all-black frame so "Stop" actually turns the
-        // lights off, instead of just freezing whatever was on screen.
         unsigned char blank[BUF_SIZE] = {0};
         send_frame(blank);
     }
@@ -953,7 +992,7 @@ void start_mode(int mode) {
         // back up by anywhere from a few hundred ms to a couple of seconds,
         // which looks like the animation freezing and then jumping ahead.
         // A slightly higher priority makes Windows deprioritize us less often.
-        SetThreadPriority(g_effectThread, THREAD_PRIORITY_ABOVE_NORMAL);
+        SetThreadPriority(g_effectThread, THREAD_PRIORITY_TIME_CRITICAL);
     }
     set_status(mode_to_label(mode));
 }
@@ -1089,7 +1128,6 @@ void draw_labeled_color_button(LPDRAWITEMSTRUCT dis, COLORREF color) {
     DeleteObject(br);
     DeleteObject(pen);
 
-    // pick black or white text based on background luminance for contrast
     double lum = (0.299*GetRValue(color) + 0.587*GetGValue(color) + 0.114*GetBValue(color));
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, (lum > 140) ? RGB(0,0,0) : RGB(255,255,255));
@@ -1544,15 +1582,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
 
-        case WM_POWERBROADCAST:
-            // v2.1: Windows tells us here when the system just woke up from
-            // sleep - this is exactly the moment our USB handle is most
-            // likely to have gone stale. Reconnect right away instead of
-            // waiting for the next frame to fail first.
-            if (wp == PBT_APMRESUMEAUTOMATIC || wp == PBT_APMRESUMESUSPEND) {
-                reconnect_device();
-            }
+        case WM_POWERBROADCAST: {
+            char logbuf[128];
+            sprintf(logbuf, "WM_POWERBROADCAST received, wParam=%lu", (unsigned long)wp);
+            log_event(logbuf);
+            request_reconnect("power-broadcast");
             return TRUE;
+        }
 
         case WM_DESTROY:
             stop_current_effect();
@@ -1567,7 +1603,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
     (void)hPrev; (void)cmd; (void)show;
     srand((unsigned int)time(NULL));
 
+    InitializeCriticalSection(&g_deviceLock);
     hid_init();
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
     g_h = hid_open_path(DEVICE_PATH);
     if (!g_h) {
         MessageBox(NULL, L"Could not open device! Make sure GCUBridge service is stopped.", L"Error", MB_OK|MB_ICONERROR);
@@ -1616,13 +1654,22 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
 
+    HPOWERNOTIFY hPowerNotify = RegisterSuspendResumeNotification((HANDLE)hwnd, DEVICE_NOTIFY_WINDOW_HANDLE);
+    if (!hPowerNotify) {
+        log_event("RegisterSuspendResumeNotification FAILED");
+    } else {
+        log_event("RegisterSuspendResumeNotification succeeded");
+    }
+
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
 
+    if (hPowerNotify) UnregisterSuspendResumeNotification(hPowerNotify);
     hid_close(g_h);
     hid_exit();
+    DeleteCriticalSection(&g_deviceLock);
     return 0;
 }
