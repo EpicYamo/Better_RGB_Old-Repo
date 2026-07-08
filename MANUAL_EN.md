@@ -24,12 +24,12 @@ As long as lighting is switched off there, the GCUBridge service can keep runnin
 
 ## 2. Building from source
 
-If you received only the source files, you'll need to compile it yourself. You need:
+You need:
 - `mingw-w64` (gcc for Windows) with `windres`
 - The [hidapi](https://github.com/libusb/hidapi) source (only `hidapi/hidapi.h` and `windows/hid.c` are needed)
 
 Files required in the same folder:
-- `rgb_gui.c` (main source)
+- (main source)
 - `resource.rc`
 - `resource.h`
 - `app.manifest`
@@ -38,7 +38,7 @@ Files required in the same folder:
 Build (two steps, from that folder):
 ```
 windres resource.rc -O coff -o resource.o
-gcc rgb_gui.c resource.o PATH_TO_HIDAPI\windows\hid.c -IPATH_TO_HIDAPI\hidapi -o rgb_gui.exe -lsetupapi -lhid -lm -mwindows -lcomdlg32 -lcomctl32 -lshell32
+gcc (main source) resource.o PATH_TO_HIDAPI\windows\hid.c -IPATH_TO_HIDAPI\hidapi -o rgb_gui.exe -lsetupapi -lhid -lm -mwindows -lcomdlg32 -lcomctl32 -lshell32
 ```
 Replace `PATH_TO_HIDAPI` with wherever you placed the hidapi source folder.
 

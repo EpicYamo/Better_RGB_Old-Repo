@@ -6,8 +6,6 @@
 
 #include <windows.h>
 
-// Opens the Animation Editor window, creating it the first time it's
-// called and just bringing it to the front on later calls.
 void open_animation_editor(HINSTANCE hInst);
 
 #endif

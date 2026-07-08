@@ -1,0 +1,42 @@
+Better RGB by TheYamo — Update Notes
+=====================================
+
+v2.1
+----
+Fixed: The application would sometimes stop responding to the keyboard
+entirely on its own - it kept running in the background (visible in the
+system tray, still using CPU) but the keyboard lighting would go black
+and stay unresponsive until the app was closed and reopened. This
+happened most reliably after the laptop went to sleep and woke back up,
+but occasionally also happened on its own with no obvious trigger.
+
+Root cause: the app opens the keyboard's USB HID interface once, when it
+starts, and keeps using that same handle for its whole lifetime. Windows
+can silently invalidate that handle - most commonly during sleep/resume,
+when the USB subsystem re-enumerates internal devices - without the
+handle itself reporting any error. The background effect thread kept
+looping normally (no crash, no exception), but every write to the
+keyboard was failing invisibly, since the return value of send_frame()
+was never actually checked by the effect loops.
+
+Fix:
+- send_frame() now detects a failed write and automatically closes and
+  reopens the device (re-running the "enter per-key mode" setup) before
+  retrying once, so a single bad moment recovers on its own instead of
+  requiring the user to restart the app.
+- The app now also listens for Windows' own "system resumed from sleep"
+  notification (WM_POWERBROADCAST) and reconnects immediately at that
+  moment, rather than waiting for the first frame to silently fail.
+
+No settings, effects, or UI changes in this version - this is a
+stability-only fix.
+
+------------------------------------------------------------
+
+v2.0
+----
+Initial tracked version. Modular mode-based UI (Select Mode dropdown +
+per-mode settings panel), Brightness always visible, system tray
+minimize support, and the following effects: Breathing, Wave, Sparkle,
+Reactive, Wheel, Lightning, Flame, Rain, Matrix (4 styles), and Static
+(zone-based).

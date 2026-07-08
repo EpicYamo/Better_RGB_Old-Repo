@@ -1,5 +1,5 @@
-// Game Garaj (Tongfang/ITE8291) Better_RGB - (GUI) VERSIYONU
-// Version 2
+// Game Garaj (Tongfang/ITE8291) Better_RGB
+// Version 2.1
 
 #define UNICODE
 #define _UNICODE
@@ -221,6 +221,29 @@ int enter_custom_mode(void) {
     return 0;
 }
 
+// v2.1: Windows sometimes invalidates our USB HID handle (most commonly after
+// sleep/resume, but occasionally on its own too) without any visible error -
+// hid_write() and hid_send_feature_report() start silently failing while the
+// app itself keeps running normally. This closes the stale handle and opens
+// a fresh one, then re-sends the "enter per-key mode" setup so the device is
+// in a known-good state again. Returns 0 on success, -1 if the device still
+// couldn't be reopened (e.g. GCUBridge lighting got re-enabled, or the
+// keyboard is genuinely not there).
+int reconnect_device(void) {
+    if (g_h) {
+        hid_close(g_h);
+        g_h = NULL;
+    }
+    g_h = hid_open_path(DEVICE_PATH);
+    if (!g_h) return -1;
+    if (enter_custom_mode() < 0) {
+        hid_close(g_h);
+        g_h = NULL;
+        return -1;
+    }
+    return 0;
+}
+
 int send_frame(unsigned char *buf) {
     int bright = (int)g_brightness;
     if (bright < 100) {
@@ -229,12 +252,25 @@ int send_frame(unsigned char *buf) {
         buf = scaled;
     }
     unsigned char step3[9] = {0x00,0x12,0x00,0x00,0x08,0x00,0x00,0x00,0x00};
-    if (hid_send_feature_report(g_h, step3, 9) < 0) return -1;
+    if (hid_send_feature_report(g_h, step3, 9) < 0) {
+        // v2.1: first failure -> try to silently reconnect and retry THIS
+        // same frame once before giving up, so a single bad moment doesn't
+        // require the user to restart the app.
+        if (reconnect_device() < 0) return -1;
+        if (hid_send_feature_report(g_h, step3, 9) < 0) return -1;
+    }
     for (int i = 0; i < 8; i++) {
         unsigned char chunk[65];
         chunk[0] = 0x00;
         memcpy(chunk+1, buf + i*64, 64);
-        if (hid_write(g_h, chunk, 65) < 0) return -1;
+        if (hid_write(g_h, chunk, 65) < 0) {
+            if (reconnect_device() < 0) return -1;
+            // The device is back, but this frame's chunk sequence is now out
+            // of sync (we reconnected partway through). Simplest safe move:
+            // bail out of this frame - the effect loop will send a fresh,
+            // complete frame on its very next iteration anyway.
+            return -1;
+        }
     }
     return 0;
 }
@@ -862,6 +898,13 @@ void stop_current_effect(void) {
         WaitForSingleObject(g_effectThread, 2000);
         CloseHandle(g_effectThread);
         g_effectThread = NULL;
+
+        // Stopping the effect thread only stops it from sending new frames -
+        // the LAST frame it sent stays lit on the keyboard forever otherwise.
+        // Explicitly send an all-black frame so "Stop" actually turns the
+        // lights off, instead of just freezing whatever was on screen.
+        unsigned char blank[BUF_SIZE] = {0};
+        send_frame(blank);
     }
     g_activeMode = -1;
 }
@@ -903,6 +946,15 @@ void start_mode(int mode) {
     InterlockedExchange(&g_stopFlag, 0);
     g_activeMode = mode;
     g_effectThread = CreateThread(NULL, 0, mode_to_fn(mode), NULL, 0, NULL);
+    if (g_effectThread) {
+        // The effect loop times its frames with Sleep(10ms), which is only a
+        // MINIMUM wait, not a guarantee - if Windows is busy (heavy app
+        // launching, antivirus scan, etc.) it can delay waking this thread
+        // back up by anywhere from a few hundred ms to a couple of seconds,
+        // which looks like the animation freezing and then jumping ahead.
+        // A slightly higher priority makes Windows deprioritize us less often.
+        SetThreadPriority(g_effectThread, THREAD_PRIORITY_ABOVE_NORMAL);
+    }
     set_status(mode_to_label(mode));
 }
 
@@ -1491,6 +1543,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 DestroyMenu(menu);
             }
             return 0;
+
+        case WM_POWERBROADCAST:
+            // v2.1: Windows tells us here when the system just woke up from
+            // sleep - this is exactly the moment our USB handle is most
+            // likely to have gone stale. Reconnect right away instead of
+            // waiting for the next frame to fail first.
+            if (wp == PBT_APMRESUMEAUTOMATIC || wp == PBT_APMRESUMESUSPEND) {
+                reconnect_device();
+            }
+            return TRUE;
 
         case WM_DESTROY:
             stop_current_effect();

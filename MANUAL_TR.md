@@ -24,12 +24,12 @@ Aydınlatma orada kapalı olduğu sürece, GCUBridge servisi diğer işlevleri i
 
 ## 2. Kaynak koddan derleme
 
-Eğer sana sadece kaynak dosyalar verildiyse, kendin derlemen gerekecek. İhtiyacın olanlar:
+İhtiyacın olanlar:
 - `mingw-w64` (Windows için gcc), `windres` dahil
 - [hidapi](https://github.com/libusb/hidapi) kaynak kodu (sadece `hidapi/hidapi.h` ve `windows/hid.c` gerekli)
 
 Aynı klasörde bulunması gereken dosyalar:
-- `rgb_gui.c` (ana kaynak kod)
+- (ana kaynak kod)
 - `resource.rc`
 - `resource.h`
 - `app.manifest`
@@ -38,7 +38,7 @@ Aynı klasörde bulunması gereken dosyalar:
 Derleme (o klasörden, iki adım):
 ```
 windres resource.rc -O coff -o resource.o
-gcc rgb_gui.c resource.o HIDAPI_YOLU\windows\hid.c -IHIDAPI_YOLU\hidapi -o rgb_gui.exe -lsetupapi -lhid -lm -mwindows -lcomdlg32 -lcomctl32 -lshell32
+gcc (ana kaynak kod) resource.o HIDAPI_YOLU\windows\hid.c -IHIDAPI_YOLU\hidapi -o rgb_gui.exe -lsetupapi -lhid -lm -mwindows -lcomdlg32 -lcomctl32 -lshell32
 ```
 `HIDAPI_YOLU` kısmını hidapi kaynak klasörünü nereye koyduysan onunla değiştir.
 

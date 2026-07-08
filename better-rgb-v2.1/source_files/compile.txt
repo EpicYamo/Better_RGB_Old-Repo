@@ -1,0 +1,2 @@
+windres resource.rc -O coff -o resource.o
+gcc better_rgb.c resource.o C:\dev\hidapi\windows\hid.c -IC:\dev\hidapi\hidapi -o "Better RGB by TheYamo.exe" -lsetupapi -lhid -lm -mwindows -lcomdlg32 -lcomctl32 -lshell32
