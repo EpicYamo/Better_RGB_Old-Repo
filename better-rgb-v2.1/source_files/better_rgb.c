@@ -7,6 +7,7 @@
 #define _WIN32_WINNT 0x0A00
 #endif
 #include <windows.h>
+#include <dbt.h>
 #include <commctrl.h>
 #include <math.h>
 #include <string.h>
@@ -20,10 +21,12 @@
 #endif
 
 #define DEVICE_PATH "\\\\?\\HID#VID_048D&PID_600B&MI_01#9&29ab79e5&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"
+
+static const GUID GUID_DEVINTERFACE_HID_LOCAL =
+    { 0x4D1E55B2, 0xF16F, 0x11CF, { 0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 } };
 #define FRAME_DELAY_MS 10
 #define BUF_SIZE 512
 
-// Mode indices (match combo box order)
 #define MODE_BREATH   0
 #define MODE_WAVE     1
 #define MODE_SPARKLE  2
@@ -36,7 +39,6 @@
 #define MODE_STATIC    9
 #define MODE_COUNT    10
 
-// Control IDs
 #define IDC_COMBO_MODE       200
 #define IDC_BTN_STOP         201
 #define IDC_SLIDER_BRIGHT    202
@@ -70,14 +72,14 @@
 #define IDC_SLIDER_FLSPEED    265
 #define IDC_SLIDER_FLSMOOTH   266
 #define IDC_SLIDER_RNSPEED    267
-#define IDC_RAIN_DENSITY_BASE 400   // 400..404 for target values 1-5
-#define IDC_RAIN_COLORCNT_BASE 410  // 410..414 for values 1-5
-#define IDC_RAIN_COLOR_BASE   270 // 270..274 for up to 5 color buttons
+#define IDC_RAIN_DENSITY_BASE 400
+#define IDC_RAIN_COLORCNT_BASE 410
+#define IDC_RAIN_COLOR_BASE   270
 #define IDC_SLIDER_MXSPEED    280
-#define IDC_MATRIX_DENSITY_BASE 420  // 420..424 for target values 1-5
-#define IDC_MATRIX_COLORCNT_BASE 430 // 430..432 for values 1-3
+#define IDC_MATRIX_DENSITY_BASE 420
+#define IDC_MATRIX_COLORCNT_BASE 430
 #define IDC_COMBO_MXSTYLE     282
-#define IDC_MATRIX_COLOR_BASE 285 // 285..287 for up to 3 color buttons
+#define IDC_MATRIX_COLOR_BASE 285
 
 #define IDC_BTN_STATIC_HORIZ    500
 #define IDC_BTN_STATIC_VERT     501
@@ -85,9 +87,6 @@
 #define IDC_COMBO_STATIC_ZONESEL 503
 #define IDC_BTN_STATIC_COLOR    504
 
-// ---------------------------------------------------------------
-// KEYMAP
-// ---------------------------------------------------------------
 typedef struct { const char *name; int offset; int row; int col; } KeyEntry;
 
 static const KeyEntry KEYMAP[] = {
@@ -119,61 +118,58 @@ static const KeyEntry KEYMAP[] = {
 };
 #define KEYMAP_COUNT (sizeof(KEYMAP)/sizeof(KEYMAP[0]))
 
-// ---------------------------------------------------------------
-// GLOBAL STATE
-// ---------------------------------------------------------------
 static hid_device *g_h = NULL;
 static HANDLE g_effectThread = NULL;
 static volatile LONG g_stopFlag = 0;
-static volatile LONG g_activeMode = -1; // -1 = none
+static volatile LONG g_activeMode = -1;
 
-static volatile LONG g_brightness = 100;         // 0-100, always active
+static volatile LONG g_brightness = 100;
 
 static COLORREF g_breathColor = RGB(0, 120, 255);
-static volatile LONG g_breathSpeed = 12;         // 1-40 -> actual t-increment = value/100.0
-static volatile LONG g_breathSmooth = 60;        // 2-150 quantization levels (higher = smoother)
+static volatile LONG g_breathSpeed = 12;
+static volatile LONG g_breathSmooth = 60;
 
-static volatile LONG g_waveAngle = 0;            // 0-359 degrees
-static volatile LONG g_waveSpeed = 4;            // 1-20 -> t increment directly
+static volatile LONG g_waveAngle = 0;
+static volatile LONG g_waveSpeed = 4;
 
-static volatile LONG g_sparkleSpeed = 5;         // 1-10 -> how fast slots refill
-static volatile LONG g_sparkleDensity = 8;       // 3-20 -> target number of simultaneously lit keys
+static volatile LONG g_sparkleSpeed = 5;
+static volatile LONG g_sparkleDensity = 8;
 
 static COLORREF g_reactiveColor = RGB(255, 255, 255);
 static volatile LONG g_reactiveRandomMode = 1;
-static volatile LONG g_reactiveDuration = 20; // fade-out duration in frames: Short=10 Medium=20 Long=45
+static volatile LONG g_reactiveDuration = 20;
 
 static volatile LONG g_wheelReverse = 0;
-static volatile LONG g_wheelSpeed = 4;           // 1-20 -> t increment directly
+static volatile LONG g_wheelSpeed = 4;
 
-static volatile LONG g_lightningSpeed = 5;       // 1-10 -> how fast the bolt travels top-to-bottom
-static volatile LONG g_lightningSmooth = 10;     // 1-20 -> trailing glow length (higher = softer/longer)
-static volatile LONG g_lightningWidth = 2;       // 1-4 -> strike column width in key-widths
-static volatile LONG g_lightningConcurrent = 1;  // 1-4 -> how many bolts can strike at once
+static volatile LONG g_lightningSpeed = 5;
+static volatile LONG g_lightningSmooth = 10;
+static volatile LONG g_lightningWidth = 2;
+static volatile LONG g_lightningConcurrent = 1;
 
-static volatile LONG g_flameSpeed = 5;           // 1-10 -> how fast heat drifts/changes
-static volatile LONG g_flameSmooth = 8;          // 1-20 -> how gradually heat blends toward new targets
+static volatile LONG g_flameSpeed = 5;
+static volatile LONG g_flameSmooth = 8;
 
 #define MAX_RAIN_DROPS 20
-static volatile LONG g_rainSpeed = 5;            // 1-10 -> how fast each drop falls/completes
-static volatile LONG g_rainDensityTarget = 3;    // 1-5 -> target simultaneous drops (probabilistic +-1)
-static volatile LONG g_rainColorCount = 1;       // 1-5
+static volatile LONG g_rainSpeed = 5;
+static volatile LONG g_rainDensityTarget = 3;
+static volatile LONG g_rainColorCount = 1;
 static COLORREF g_rainColors[5] = { RGB(80,140,255), RGB(120,80,255), RGB(80,220,255), RGB(255,255,255), RGB(80,255,180) };
 static HWND g_rainColorBtn[5];
 static HWND g_rainDensityBtn[5];
 static HWND g_rainColorCountBtn[5];
 
-static volatile LONG g_matrixSpeed = 5;          // 1-10 -> streak speed
-static volatile LONG g_matrixStyle = 0;          // 0 = diagonal streaks, 1 = vertical columns
-static volatile LONG g_matrixDensityTarget = 2;  // 1-5 -> target simultaneous diagonal streaks (probabilistic +-1)
-static volatile LONG g_matrixColorCount = 1;     // 1-3
+static volatile LONG g_matrixSpeed = 5;
+static volatile LONG g_matrixStyle = 0;
+static volatile LONG g_matrixDensityTarget = 2;
+static volatile LONG g_matrixColorCount = 1;
 static COLORREF g_matrixColors[3] = { RGB(0,255,60), RGB(0,180,255), RGB(255,0,120) };
 static HWND g_matrixColorBtn[3];
 static HWND g_matrixDensityBtn[5];
 static HWND g_matrixColorCountBtn[3];
 static HWND g_hComboMatrixStyle;
 
-static volatile LONG g_staticLayout = 0;     // 0 = horizontal, 1 = vertical
+static volatile LONG g_staticLayout = 0;
 static volatile LONG g_staticZoneCount = 1;
 static COLORREF g_staticColors[10] = {
     RGB(255,255,255), RGB(255,0,0), RGB(0,255,0), RGB(0,0,255), RGB(255,255,0),
@@ -185,13 +181,13 @@ static HWND g_btnStaticHoriz, g_btnStaticVert, g_hSliderStaticZones, g_hComboSta
 #define WM_TRAYICON (WM_USER + 1)
 #define IDC_TRAY_RESTORE 900
 #define IDC_TRAY_EXIT    901
+#define IDT_REASSERT_TIMER 2
 
 static HWND g_hStatus, g_hComboMode, g_hSliderBright, g_hLblAngle, g_hLblConcurrent;
 static HWND g_hSwatchBreath, g_hSwatchReact;
 static HBRUSH g_bgBrush;
 static NOTIFYICONDATA g_nid;
 
-// Panel control groups (shown/hidden together based on selected mode)
 #define MAX_PANEL_CTRLS 25
 static HWND g_panelBreath[MAX_PANEL_CTRLS]; static int g_panelBreathCount = 0;
 static HWND g_panelWave[MAX_PANEL_CTRLS];   static int g_panelWaveCount = 0;
@@ -235,6 +231,11 @@ int enter_custom_mode(void) {
     return 0;
 }
 
+int reassert_mode_only(void) {
+    unsigned char step2[9] = {0x00,0x08,0x02,0x33,0x00,0x32,0x00,0x00,0x00};
+    return hid_send_feature_report(g_h, step2, 9) < 0 ? -1 : 0;
+}
+
 int reconnect_device(void) {
     EnterCriticalSection(&g_deviceLock);
     log_event("reconnect_device: starting");
@@ -255,7 +256,7 @@ int reconnect_device(void) {
         LeaveCriticalSection(&g_deviceLock);
         return -1;
     }
-    Sleep(20); // let the freshly opened handle settle before we start writing to it
+    Sleep(20);
     if (enter_custom_mode() < 0) {
         log_event("reconnect_device: enter_custom_mode FAILED");
         hid_close(g_h);
@@ -290,8 +291,32 @@ void request_reconnect(const char *reason) {
     if (h) CloseHandle(h);
 }
 
-int send_frame(unsigned char *buf) {
+DWORD WINAPI reassert_thread_proc(LPVOID p) {
+    (void)p;
+    ULONGLONG t0 = GetTickCount64();
     EnterCriticalSection(&g_deviceLock);
+    ULONGLONG t1 = GetTickCount64();
+    if (g_h) {
+        int r = reassert_mode_only();
+        ULONGLONG t2 = GetTickCount64();
+        char logbuf[192];
+        sprintf(logbuf, "periodic reassert: lock_wait=%llums call_time=%llums result=%s",
+            (unsigned long long)(t1-t0), (unsigned long long)(t2-t1), r < 0 ? "FAIL" : "ok");
+        log_event(logbuf);
+        if (r < 0) {
+            LeaveCriticalSection(&g_deviceLock);
+            request_reconnect("reassert-failed");
+            return 0;
+        }
+    }
+    LeaveCriticalSection(&g_deviceLock);
+    return 0;
+}
+
+int send_frame(unsigned char *buf) {
+    ULONGLONG tStart = GetTickCount64();
+    EnterCriticalSection(&g_deviceLock);
+    ULONGLONG tLocked = GetTickCount64();
     int bright = (int)g_brightness;
     if (bright < 100) {
         unsigned char scaled[BUF_SIZE];
@@ -301,9 +326,6 @@ int send_frame(unsigned char *buf) {
     unsigned char step3[9] = {0x00,0x12,0x00,0x00,0x08,0x00,0x00,0x00,0x00};
     if (hid_send_feature_report(g_h, step3, 9) < 0) {
         log_event("send_frame: feature report failed, attempting reconnect");
-        // v2.1: first failure -> try to silently reconnect and retry THIS
-        // same frame once before giving up, so a single bad moment doesn't
-        // require the user to restart the app.
         if (reconnect_device() < 0) { LeaveCriticalSection(&g_deviceLock); return -1; }
         if (hid_send_feature_report(g_h, step3, 9) < 0) { LeaveCriticalSection(&g_deviceLock); return -1; }
     }
@@ -318,7 +340,22 @@ int send_frame(unsigned char *buf) {
             return -1;
         }
     }
+    ULONGLONG tDone = GetTickCount64();
     LeaveCriticalSection(&g_deviceLock);
+
+    // v2.1 diagnostic: a normal send_frame should take a few ms at most.
+    // If either waiting for the lock or the actual USB calls took unusually
+    // long, log it - this is how we'll catch "hid_write silently blocked
+    // for several seconds instead of failing" without flooding the log
+    // during normal operation (this runs every ~10ms otherwise).
+    ULONGLONG lockWait = tLocked - tStart;
+    ULONGLONG callTime = tDone - tLocked;
+    if (lockWait > 200 || callTime > 200) {
+        char logbuf[160];
+        sprintf(logbuf, "send_frame SLOW: lock_wait=%llums call_time=%llums",
+            (unsigned long long)lockWait, (unsigned long long)callTime);
+        log_event(logbuf);
+    }
     return 0;
 }
 
@@ -338,7 +375,7 @@ void hsv_to_rgb(double h, unsigned char *r, unsigned char *g, unsigned char *b) 
 }
 
 int compute_prob_count(int target, int minCount, int maxCount) {
-    if (target >= maxCount) return maxCount; // at max, always exactly max
+    if (target >= maxCount) return maxCount;
     int r = rand() % 100;
     if (r < 25) { int v = target-1; return (v < minCount) ? minCount : v; }
     else if (r < 75) return target;
@@ -346,9 +383,8 @@ int compute_prob_count(int target, int minCount, int maxCount) {
 }
 
 double get_key_x(const KeyEntry *k) {
-    // MANUAL OVERRIDES (hand-tuned by observation): these keys sit after wide keys
-    // (Space etc.) in their row, so their raw column index doesn't reflect their
-    // true physical x position. Row is unaffected by this table.
+
+
     if (strcmp(k->name,"AltGr")==0)         return 10.5;
     if (strcmp(k->name,"CopilotKey")==0)    return 11.5;
     if (strcmp(k->name,"ArrowUp")==0)       return 13.0;
@@ -366,9 +402,6 @@ double get_key_x(const KeyEntry *k) {
     return (double)k->col;
 }
 
-// ---------------------------------------------------------------
-// EFFECTS
-// ---------------------------------------------------------------
 DWORD WINAPI effect_breathing(LPVOID p) {
     (void)p;
     double t = 0.0;
@@ -446,10 +479,10 @@ DWORD WINAPI effect_lightning(LPVOID p) {
 
     while (!g_stopFlag) {
         double speed = 0.05 + (double)g_lightningSpeed * 0.08;
-        double bandWidth = 0.4 + (double)g_lightningSmooth * 0.15;  // trailing tail length behind the head
+        double bandWidth = 0.4 + (double)g_lightningSmooth * 0.15;
         double tailLen = bandWidth * 2.5;
-        double finishPos = 6.0 + tailLen + 0.5; // let the tail fully clear the bottom before resetting
-        double xWidth = 0.35 + ((double)g_lightningWidth - 1.0) * 0.383; // level1~0.35 .. level4~1.5
+        double finishPos = 6.0 + tailLen + 0.5;
+        double xWidth = 0.35 + ((double)g_lightningWidth - 1.0) * 0.383;
         int concurrent = (int)g_lightningConcurrent;
         if (concurrent < 1) concurrent = 1;
         if (concurrent > MAX_STRIKES) concurrent = MAX_STRIKES;
@@ -468,7 +501,7 @@ DWORD WINAPI effect_lightning(LPVOID p) {
             }
             if (headPos[s] <= finishPos) {
                 for (size_t i=0;i<KEYMAP_COUNT;i++) {
-                    double dv = headPos[s] - KEYMAP[i].row; // positive = trailing behind (above), negative = not yet reached
+                    double dv = headPos[s] - KEYMAP[i].row;
                     double dh = fabs(get_key_x(&KEYMAP[i]) - boltX[s]);
                     if (dv < -0.3 || dv > tailLen) continue;
                     if (dh > xWidth) continue;
@@ -489,7 +522,7 @@ DWORD WINAPI effect_lightning(LPVOID p) {
                 unsigned char v = (unsigned char)(bright[i]*255);
                 set_key(buf, KEYMAP[i].offset, v, v, 255);
             } else {
-                set_key(buf, KEYMAP[i].offset, 4,4,14); // dim stormy base
+                set_key(buf, KEYMAP[i].offset, 4,4,14);
             }
         }
         send_frame(buf);
@@ -505,17 +538,17 @@ DWORD WINAPI effect_flame(LPVOID p) {
     int frameCounter = 0;
 
     while (!g_stopFlag) {
-        double speed = (double)g_flameSpeed;      // 1-10
-        double smooth = (double)g_flameSmooth;    // 1-20
-        double alpha = 1.0 / (1.0 + smooth*0.6);  // higher smoothness -> slower blending
-        double volatility = 40.0 + speed*18.0;    // how wide the random target range is
-        int updateInterval = 11 - (int)speed;     // speed 1 -> update every 10 frames (slow), speed 10 -> every frame
+        double speed = (double)g_flameSpeed;
+        double smooth = (double)g_flameSmooth;
+        double alpha = 1.0 / (1.0 + smooth*0.6);
+        double volatility = 40.0 + speed*18.0;
+        int updateInterval = 11 - (int)speed;
         if (updateInterval < 1) updateInterval = 1;
 
         frameCounter++;
         if (frameCounter % updateInterval == 0) {
             for (size_t i=0;i<KEYMAP_COUNT;i++) {
-                double rowFrac = KEYMAP[i].row / 6.0; // weak bias only, bottom slightly hotter on average
+                double rowFrac = KEYMAP[i].row / 6.0;
                 double bias = 40.0 * rowFrac;
                 double target = 90.0 + bias + (rand()%(int)volatility - volatility/2.0);
                 heat[i] = heat[i]*(1.0-alpha) + target*alpha;
@@ -560,7 +593,7 @@ DWORD WINAPI effect_rain(LPVOID p) {
         int target = (int)g_rainDensityTarget;
         if (target < 1) target = 1;
         if (target > 5) target = 5;
-        activeDrops = target * 3; // level1=3 drops ... level5=15 drops
+        activeDrops = target * 3;
         if (activeDrops > MAX_RAIN_DROPS) activeDrops = MAX_RAIN_DROPS;
 
         unsigned char buf[BUF_SIZE] = {0};
@@ -568,8 +601,8 @@ DWORD WINAPI effect_rain(LPVOID p) {
             COLORREF col = g_rainColors[dropColorIdx[d] % colorCount];
             unsigned char cr=GetRValue(col), cg=GetGValue(col), cb=GetBValue(col);
             for (int rr2 = 0; rr2 <= 6; rr2++) {
-                double trailDist = dropRow[d] - rr2; // 0 at head, positive = trailing behind (above)
-                if (trailDist < -0.3 || trailDist > 1.8) continue; // only light head + short trailing tail
+                double trailDist = dropRow[d] - rr2;
+                if (trailDist < -0.3 || trailDist > 1.8) continue;
                 double bright = (trailDist < 0) ? 1.0 : (1.0 - trailDist/1.8);
                 if (bright < 0) bright = 0;
                 int best = -1; double bestDist = 1e9;
@@ -599,7 +632,7 @@ DWORD WINAPI effect_rain(LPVOID p) {
 #define MATRIX_COLUMNS 24
 DWORD WINAPI effect_matrix(LPVOID p) {
     (void)p;
-    // Style 0: diagonal streaks
+
     double angle[MATRIX_STREAKS], pos[MATRIX_STREAKS], spd[MATRIX_STREAKS];
     int streakColorIdx[MATRIX_STREAKS];
     for (int i=0;i<MATRIX_STREAKS;i++) {
@@ -610,24 +643,24 @@ DWORD WINAPI effect_matrix(LPVOID p) {
     }
     int activeStreaks = (int)g_matrixDensityTarget;
     int rerollCounter = 0;
-    // Style 1: vertical falling columns (classic "digital rain")
+
     double colPos[MATRIX_COLUMNS]; double colSpeed[MATRIX_COLUMNS]; int colColorIdx[MATRIX_COLUMNS];
     for (int i=0;i<MATRIX_COLUMNS;i++) {
         colPos[i] = -(double)(rand()%8);
         colSpeed[i] = 0.05 + (rand()%100)/300.0;
         colColorIdx[i] = rand() % (int)g_matrixColorCount;
     }
-    // Style 2: laser sweep (2-3 sharp thin lines)
+
     #define MAX_LASERS 3
     double laserAngle[MAX_LASERS], laserPos[MAX_LASERS], laserSpd[MAX_LASERS];
     int laserColorIdx[MAX_LASERS];
     for (int i=0;i<MAX_LASERS;i++) {
-        laserAngle[i] = (rand()%4) * (M_PI/2.0); // 0/90/180/270 for crisp horizontal/vertical sweeps
-        laserPos[i] = -30.0 - i*8.0; // staggered start
+        laserAngle[i] = (rand()%4) * (M_PI/2.0);
+        laserPos[i] = -30.0 - i*8.0;
         laserSpd[i] = 0.6 + (rand()%100)/100.0;
         laserColorIdx[i] = rand() % (int)g_matrixColorCount;
     }
-    // Style 3: ripple (expanding rings from random points)
+
     #define MAX_RIPPLES 3
     double rippleX[MAX_RIPPLES], rippleY[MAX_RIPPLES], rippleR[MAX_RIPPLES];
     int rippleColorIdx[MAX_RIPPLES];
@@ -670,7 +703,7 @@ DWORD WINAPI effect_matrix(LPVOID p) {
                 if (pos[s] > 30) { pos[s]=-30; angle[s]=(rand()%360)*M_PI/180.0; spd[s]=0.2+(rand()%100)/100.0; streakColorIdx[s]=rand()%colorCount; }
             }
         } else if (style == 1) {
-            // vertical columns: each key belongs to nearest integer column bucket based on x
+
             for (size_t i=0;i<KEYMAP_COUNT;i++) {
                 double x = get_key_x(&KEYMAP[i]);
                 int col = (int)(x + 0.5);
@@ -687,7 +720,7 @@ DWORD WINAPI effect_matrix(LPVOID p) {
                 if (colPos[i] > 10) { colPos[i] = -(double)(rand()%6); colSpeed[i]=0.05+(rand()%100)/300.0; colColorIdx[i]=rand()%colorCount; }
             }
         } else if (style == 2) {
-            // laser sweep: 2-3 crisp thin lines, count tied to density selector
+
             int target = (int)g_matrixDensityTarget;
             int laserCount = (target >= 4) ? 3 : 2;
             for (size_t i=0;i<KEYMAP_COUNT;i++) {
@@ -717,7 +750,7 @@ DWORD WINAPI effect_matrix(LPVOID p) {
                 }
             }
         } else {
-            // ripple: expanding rings from random points
+
             for (size_t i=0;i<KEYMAP_COUNT;i++) {
                 double x = get_key_x(&KEYMAP[i]), y = KEYMAP[i].row;
                 double bestBright = 0; int bestColor = 0;
@@ -812,8 +845,8 @@ DWORD WINAPI effect_sparkle(LPVOID p) {
     int *maxLife = (int*)calloc(KEYMAP_COUNT, sizeof(int));
     unsigned char *rr=(unsigned char*)calloc(KEYMAP_COUNT,1), *gg=(unsigned char*)calloc(KEYMAP_COUNT,1), *bb=(unsigned char*)calloc(KEYMAP_COUNT,1);
     while (!g_stopFlag) {
-        int target = (int)g_sparkleDensity;         // exact number of keys kept lit at once (3-20)
-        int speed = (int)g_sparkleSpeed;             // controls how long each spark stays lit (turnover rate)
+        int target = (int)g_sparkleDensity;
+        int speed = (int)g_sparkleSpeed;
         int lifeDuration = 50 - speed*4;
         if (lifeDuration < 8) lifeDuration = 8;
 
@@ -827,7 +860,7 @@ DWORD WINAPI effect_sparkle(LPVOID p) {
                 int c = rand() % KEYMAP_COUNT;
                 if (life[c] == 0) { idx = c; break; }
             }
-            if (idx < 0) break; // keyboard full, no off key left
+            if (idx < 0) break;
             life[idx] = lifeDuration;
             maxLife[idx] = lifeDuration;
             rr[idx]=rand()%256; gg[idx]=rand()%256; bb[idx]=rand()%256;
@@ -929,15 +962,13 @@ DWORD WINAPI effect_reactive(LPVOID p) {
     return 0;
 }
 
-// ---------------------------------------------------------------
-// THREAD MANAGEMENT
-// ---------------------------------------------------------------
 void set_status(const wchar_t *text) {
     if (g_hStatus) SetWindowText(g_hStatus, text);
 }
 
 void stop_current_effect(void) {
     if (g_effectThread) {
+        log_event("stop_current_effect: stopping active effect thread, sending blank frame");
         InterlockedExchange(&g_stopFlag, 1);
         WaitForSingleObject(g_effectThread, 2000);
         CloseHandle(g_effectThread);
@@ -981,25 +1012,19 @@ const wchar_t* mode_to_label(int mode) {
 }
 
 void start_mode(int mode) {
+    char logbuf[64];
+    sprintf(logbuf, "start_mode: switching to mode %d", mode);
+    log_event(logbuf);
     stop_current_effect();
     InterlockedExchange(&g_stopFlag, 0);
     g_activeMode = mode;
     g_effectThread = CreateThread(NULL, 0, mode_to_fn(mode), NULL, 0, NULL);
     if (g_effectThread) {
-        // The effect loop times its frames with Sleep(10ms), which is only a
-        // MINIMUM wait, not a guarantee - if Windows is busy (heavy app
-        // launching, antivirus scan, etc.) it can delay waking this thread
-        // back up by anywhere from a few hundred ms to a couple of seconds,
-        // which looks like the animation freezing and then jumping ahead.
-        // A slightly higher priority makes Windows deprioritize us less often.
         SetThreadPriority(g_effectThread, THREAD_PRIORITY_TIME_CRITICAL);
     }
     set_status(mode_to_label(mode));
 }
 
-// ---------------------------------------------------------------
-// PANEL VISIBILITY
-// ---------------------------------------------------------------
 void show_only(HWND *arr, int count, BOOL show) {
     for (int i = 0; i < count; i++) ShowWindow(arr[i], show ? SW_SHOW : SW_HIDE);
 }
@@ -1019,9 +1044,6 @@ void show_panel_for_mode(int mode) {
     if (top) { InvalidateRect(top, NULL, TRUE); UpdateWindow(top); }
 }
 
-// ---------------------------------------------------------------
-// COLOR SWATCH
-// ---------------------------------------------------------------
 LRESULT CALLBACK SwatchProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_PAINT) {
         PAINTSTRUCT ps;
@@ -1055,9 +1077,6 @@ COLORREF pick_color(HWND hwnd, COLORREF initial) {
     return initial;
 }
 
-// ---------------------------------------------------------------
-// OWNER-DRAW BUTTON PAINTING
-// ---------------------------------------------------------------
 void draw_button_ex(LPDRAWITEMSTRUCT dis, BOOL useCustomColor, COLORREF customColor) {
     HDC hdc = dis->hDC;
     RECT rc = dis->rcItem;
@@ -1139,9 +1158,6 @@ BOOL CALLBACK SetFontOnChild(HWND hwnd, LPARAM lFont) {
     return TRUE;
 }
 
-// ---------------------------------------------------------------
-// HELPERS TO BUILD UI
-// ---------------------------------------------------------------
 HWND mk_label(HWND parent, const wchar_t *text, int x, int y, int w, int h) {
     return CreateWindow(L"STATIC", text, WS_CHILD|WS_VISIBLE, x,y,w,h, parent, NULL, NULL, NULL);
 }
@@ -1157,9 +1173,6 @@ HWND mk_button(HWND parent, const wchar_t *text, int id, int x, int y, int w, in
     return CreateWindow(L"BUTTON", text, WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, x,y,w,h, parent, (HMENU)(INT_PTR)id, NULL, NULL);
 }
 
-// ---------------------------------------------------------------
-// MAIN WINDOW
-// ---------------------------------------------------------------
 void refresh_rain_color_visibility(void) {
     for (int i=0;i<5;i++) ShowWindow(g_rainColorBtn[i], (i < (int)g_rainColorCount) ? SW_SHOW : SW_HIDE);
     HWND top = GetAncestor(g_rainColorBtn[0], GA_ROOT);
@@ -1238,7 +1251,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             mk_button(hwnd, L"Stop (Turn Off Lights)", IDC_BTN_STOP, 20, 55, 340, 35);
 
-            // --- Breathing panel (y starts at 105) ---
             g_panelBreath[g_panelBreathCount++] = mk_label(hwnd, L"Breathing Color:", 20, 105, 150, 20);
             g_hSwatchBreath = CreateWindow(L"SwatchClass", L"", WS_CHILD|WS_BORDER, 20,128,50,28, hwnd, (HMENU)(INT_PTR)999, NULL, NULL);
             g_panelBreath[g_panelBreathCount++] = g_hSwatchBreath;
@@ -1248,7 +1260,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_panelBreath[g_panelBreathCount++] = mk_label(hwnd, L"Smoothness:", 20, 220, 150, 20);
             g_panelBreath[g_panelBreathCount++] = mk_slider(hwnd, IDC_SLIDER_BSMOOTH, 20, 240, 340, 30, 2, 150, g_breathSmooth);
 
-            // --- Wave panel ---
             g_hLblAngle = mk_label(hwnd, L"Angle: 0 degrees", 20, 105, 300, 20);
             g_panelWave[g_panelWaveCount++] = g_hLblAngle;
             HWND sAngle = mk_slider(hwnd, IDC_SLIDER_ANGLE, 20, 125, 340, 30, 0, 359, g_waveAngle);
@@ -1259,13 +1270,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_panelWave[g_panelWaveCount++] = mk_label(hwnd, L"Speed:", 20, 165, 150, 20);
             g_panelWave[g_panelWaveCount++] = mk_slider(hwnd, IDC_SLIDER_WSPEED, 20, 185, 340, 30, 1, 20, g_waveSpeed);
 
-            // --- Sparkle panel ---
             g_panelSparkle[g_panelSparkleCount++] = mk_label(hwnd, L"Speed:", 20, 105, 150, 20);
             g_panelSparkle[g_panelSparkleCount++] = mk_slider(hwnd, IDC_SLIDER_SPSPEED, 20, 125, 340, 30, 1, 10, g_sparkleSpeed);
             g_panelSparkle[g_panelSparkleCount++] = mk_label(hwnd, L"Density:", 20, 165, 150, 20);
             g_panelSparkle[g_panelSparkleCount++] = mk_slider(hwnd, IDC_SLIDER_SPDENS, 20, 185, 340, 30, 3, 20, g_sparkleDensity);
 
-            // --- Reactive panel ---
             g_panelReactive[g_panelReactiveCount++] = mk_label(hwnd, L"Reactive Color:", 20, 105, 200, 20);
             g_hSwatchReact = CreateWindow(L"SwatchClass", L"", WS_CHILD|WS_BORDER, 20,128,50,28, hwnd, (HMENU)(INT_PTR)998, NULL, NULL);
             g_panelReactive[g_panelReactiveCount++] = g_hSwatchReact;
@@ -1283,14 +1292,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_panelReactive[g_panelReactiveCount++] = rMedium;
             g_panelReactive[g_panelReactiveCount++] = rLong;
 
-            // --- Wheel panel ---
             HWND chkRev = CreateWindow(L"BUTTON", L"Reverse Direction", WS_CHILD|BS_AUTOCHECKBOX,
                 20, 105, 200, 20, hwnd, (HMENU)IDC_CHK_WHEEL_REVERSE, NULL, NULL);
             g_panelWheel[g_panelWheelCount++] = chkRev;
             g_panelWheel[g_panelWheelCount++] = mk_label(hwnd, L"Speed:", 20, 135, 150, 20);
             g_panelWheel[g_panelWheelCount++] = mk_slider(hwnd, IDC_SLIDER_WHSPEED, 20, 155, 340, 30, 1, 20, g_wheelSpeed);
 
-            // --- Lightning panel ---
             g_panelLightning[g_panelLightningCount++] = mk_label(hwnd, L"Speed:", 20, 105, 200, 20);
             g_panelLightning[g_panelLightningCount++] = mk_slider(hwnd, IDC_SLIDER_LTSPEED, 20, 125, 340, 30, 1, 10, g_lightningSpeed);
             g_panelLightning[g_panelLightningCount++] = mk_label(hwnd, L"Smoothness:", 20, 165, 200, 20);
@@ -1301,13 +1308,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_panelLightning[g_panelLightningCount++] = g_hLblConcurrent;
             g_panelLightning[g_panelLightningCount++] = mk_slider(hwnd, IDC_SLIDER_LTCONCUR, 20, 305, 340, 30, 1, 4, g_lightningConcurrent);
 
-            // --- Flame panel ---
             g_panelFlame[g_panelFlameCount++] = mk_label(hwnd, L"Flicker Speed:", 20, 105, 200, 20);
             g_panelFlame[g_panelFlameCount++] = mk_slider(hwnd, IDC_SLIDER_FLSPEED, 20, 125, 340, 30, 1, 10, g_flameSpeed);
             g_panelFlame[g_panelFlameCount++] = mk_label(hwnd, L"Smoothness:", 20, 165, 200, 20);
             g_panelFlame[g_panelFlameCount++] = mk_slider(hwnd, IDC_SLIDER_FLSMOOTH, 20, 185, 340, 30, 1, 20, g_flameSmooth);
 
-            // --- Rain panel ---
             g_panelRain[g_panelRainCount++] = mk_label(hwnd, L"Fall Speed:", 20, 105, 200, 20);
             g_panelRain[g_panelRainCount++] = mk_slider(hwnd, IDC_SLIDER_RNSPEED, 20, 125, 340, 30, 1, 10, g_rainSpeed);
             g_panelRain[g_panelRainCount++] = mk_label(hwnd, L"Density (simultaneous drops):", 20, 165, 300, 20);
@@ -1325,7 +1330,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 g_panelRain[g_panelRainCount++] = g_rainColorBtn[c];
             }
 
-            // --- Matrix panel ---
             g_panelMatrix[g_panelMatrixCount++] = mk_label(hwnd, L"Streak Speed:", 20, 105, 200, 20);
             g_panelMatrix[g_panelMatrixCount++] = mk_slider(hwnd, IDC_SLIDER_MXSPEED, 20, 125, 340, 30, 1, 10, g_matrixSpeed);
             g_panelMatrix[g_panelMatrixCount++] = mk_label(hwnd, L"Style:", 20, 165, 200, 20);
@@ -1352,7 +1356,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 g_panelMatrix[g_panelMatrixCount++] = g_matrixColorBtn[c];
             }
 
-            // --- Static panel ---
             g_panelStatic[g_panelStaticCount++] = mk_label(hwnd, L"Layout:", 20, 105, 200, 20);
             g_btnStaticHoriz = mk_button(hwnd, L"Horizontal", IDC_BTN_STATIC_HORIZ, 20, 125, 165, 32);
             HWND btnStaticVert = mk_button(hwnd, L"Vertical", IDC_BTN_STATIC_VERT, 195, 125, 165, 32);
@@ -1368,7 +1371,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_btnStaticColor = mk_button(hwnd, L"Select Color", IDC_BTN_STATIC_COLOR, 20, 265, 340, 36);
             g_panelStatic[g_panelStaticCount++] = g_btnStaticColor;
 
-            // --- Always-visible: brightness ---
             mk_label(hwnd, L"Brightness:", 20, 400, 150, 20);
             g_hSliderBright = mk_slider(hwnd, IDC_SLIDER_BRIGHT, 20, 420, 340, 30, 0, 100, g_brightness);
 
@@ -1381,7 +1383,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             refresh_rain_color_visibility();
             refresh_matrix_color_visibility();
             refresh_static_ui();
-            show_panel_for_mode(-1); // hide all initially
+            show_panel_for_mode(-1);
 
             EnumChildWindows(hwnd, SetFontOnChild, (LPARAM)hFont);
             return 0;
@@ -1582,6 +1584,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
 
+        case WM_DEVICECHANGE: {
+            if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
+                char logbuf[128];
+                sprintf(logbuf, "WM_DEVICECHANGE received, wParam=%lu", (unsigned long)wp);
+                log_event(logbuf);
+                request_reconnect("device-change");
+            }
+            return TRUE;
+        }
+
+        case WM_TIMER:
+            if (wp == IDT_REASSERT_TIMER) {
+                HANDLE h = CreateThread(NULL, 0, reassert_thread_proc, NULL, 0, NULL);
+                if (h) CloseHandle(h);
+            }
+            return 0;
+
         case WM_POWERBROADCAST: {
             char logbuf[128];
             sprintf(logbuf, "WM_POWERBROADCAST received, wParam=%lu", (unsigned long)wp);
@@ -1591,6 +1610,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_DESTROY:
+            KillTimer(hwnd, IDT_REASSERT_TIMER);
             stop_current_effect();
             Shell_NotifyIcon(NIM_DELETE, &g_nid);
             PostQuitMessage(0);
@@ -1660,6 +1680,23 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
     } else {
         log_event("RegisterSuspendResumeNotification succeeded");
     }
+
+    DEV_BROADCAST_DEVICEINTERFACE devFilter = {0};
+    devFilter.dbcc_size = sizeof(devFilter);
+    devFilter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+    devFilter.dbcc_classguid = GUID_DEVINTERFACE_HID_LOCAL;
+    HDEVNOTIFY hDevNotify = RegisterDeviceNotification(hwnd, &devFilter, DEVICE_NOTIFY_WINDOW_HANDLE);
+    if (!hDevNotify) {
+        log_event("RegisterDeviceNotification FAILED");
+    } else {
+        log_event("RegisterDeviceNotification succeeded");
+    }
+
+    // TEMPORARILY DISABLED for a controlled test - suspecting the periodic
+    // reassert command itself might be what's causing the brief freezes,
+    // rather than fixing them. Re-enable by uncommenting if testing shows
+    // the freezes still happen without it.
+    // SetTimer(hwnd, IDT_REASSERT_TIMER, 15000, NULL);
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
