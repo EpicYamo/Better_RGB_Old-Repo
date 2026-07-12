@@ -1012,10 +1012,34 @@ const wchar_t* mode_to_label(int mode) {
 }
 
 void start_mode(int mode) {
-    char logbuf[64];
+    char logbuf[96];
     sprintf(logbuf, "start_mode: switching to mode %d", mode);
     log_event(logbuf);
     stop_current_effect();
+
+    // v2.2 DIAGNOSTIC TEST: re-send the FULL EC init sequence (prep1 +
+    // clear frame + prep2) on EVERY mode transition (mode->mode and
+    // STOP->mode), not just at app startup / reconnect.
+    //
+    // Hypothesis: the "RGB dies silently in the first 30-60 min after
+    // boot" bug is the EC dropping out of custom mode. hid calls keep
+    // succeeding (so nothing is logged and reconnect never triggers),
+    // but the EC ignores the per-frame prep3 + chunk stream. Evidence:
+    // launching a SECOND instance (whose WinMain runs enter_custom_mode)
+    // revives the first instance's output.
+    //
+    // If, while the keyboard is "dead", simply switching modes in THIS
+    // app now revives it (no second instance needed), the hypothesis is
+    // confirmed -> next step: inject prep1/prep2 periodically between
+    // frames, or hunt down what resets the EC mode after boot.
+    EnterCriticalSection(&g_deviceLock);
+    int reinit = g_h ? enter_custom_mode() : -1;
+    LeaveCriticalSection(&g_deviceLock);
+    sprintf(logbuf, "start_mode: full EC re-init (prep1+prep2) result=%s",
+        reinit < 0 ? "FAIL" : "ok");
+    log_event(logbuf);
+    if (reinit < 0) request_reconnect("start_mode-reinit-failed");
+
     InterlockedExchange(&g_stopFlag, 0);
     g_activeMode = mode;
     g_effectThread = CreateThread(NULL, 0, mode_to_fn(mode), NULL, 0, NULL);

@@ -1,0 +1,29 @@
+[18:34:33.037] [thread 8948] RegisterSuspendResumeNotification succeeded
+[18:34:33.039] [thread 8948] RegisterDeviceNotification succeeded
+[18:34:34.616] [thread 8948] start_mode: switching to mode 8
+[18:34:34.616] [thread 8948] start_mode: full EC re-init (prep1+prep2) result=ok
+[18:34:45.855] [thread 8948] start_mode: switching to mode 3
+[18:34:45.855] [thread 8948] stop_current_effect: stopping active effect thread, sending blank frame
+[18:34:45.871] [thread 8948] start_mode: full EC re-init (prep1+prep2) result=ok
+[18:34:59.674] [thread 8948] start_mode: switching to mode 8
+[18:34:59.674] [thread 8948] stop_current_effect: stopping active effect thread, sending blank frame
+[18:34:59.706] [thread 8948] start_mode: full EC re-init (prep1+prep2) result=ok
+[18:35:11.033] [thread 8948] start_mode: switching to mode 6
+[18:35:11.033] [thread 8948] stop_current_effect: stopping active effect thread, sending blank frame
+[18:35:11.054] [thread 8948] start_mode: full EC re-init (prep1+prep2) result=ok
+[18:35:14.660] [thread 8948] start_mode: switching to mode 8
+[18:35:14.660] [thread 8948] stop_current_effect: stopping active effect thread, sending blank frame
+[18:35:14.670] [thread 8948] start_mode: full EC re-init (prep1+prep2) result=ok
+[18:35:17.088] [thread 8948] start_mode: switching to mode 0
+[18:35:17.088] [thread 8948] stop_current_effect: stopping active effect thread, sending blank frame
+[18:35:17.104] [thread 8948] start_mode: full EC re-init (prep1+prep2) result=ok
+[18:35:19.384] [thread 8948] start_mode: switching to mode 9
+[18:35:19.384] [thread 8948] stop_current_effect: stopping active effect thread, sending blank frame
+[18:35:19.411] [thread 8948] start_mode: full EC re-init (prep1+prep2) result=ok
+[18:35:25.094] [thread 8948] start_mode: switching to mode 8
+[18:35:25.094] [thread 8948] stop_current_effect: stopping active effect thread, sending blank frame
+[18:35:25.124] [thread 8948] start_mode: full EC re-init (prep1+prep2) result=ok
+[18:36:02.283] [thread 8948] WM_DEVICECHANGE received, wParam=32768
+[18:36:02.283] [thread 8948] request_reconnect(device-change): spawning reconnect thread
+[18:36:02.283] [thread 3512] reconnect_device: starting
+[18:36:02.458] [thread 3512] reconnect_device: success
