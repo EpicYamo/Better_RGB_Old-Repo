@@ -1,5 +1,5 @@
 // Game Garaj (Tongfang/ITE8291) Better_RGB
-// Version 2.1
+// Version 2.2
 
 #define UNICODE
 #define _UNICODE
@@ -12,6 +12,7 @@
 #include <math.h>
 #include <string.h>
 #include <time.h>
+#include <ctype.h>
 #include <stdio.h>
 #include "hidapi.h"
 #include "resource.h"
@@ -43,6 +44,7 @@ static const GUID GUID_DEVINTERFACE_HID_LOCAL =
 #define IDC_BTN_STOP         201
 #define IDC_SLIDER_BRIGHT    202
 #define IDC_STATIC_STATUS    203
+#define IDC_BTN_AUTOSTART    205
 
 #define IDC_BTN_COLOR_BREATH 210
 #define IDC_SWATCH_BREATH    211
@@ -181,7 +183,6 @@ static HWND g_btnStaticHoriz, g_btnStaticVert, g_hSliderStaticZones, g_hComboSta
 #define WM_TRAYICON (WM_USER + 1)
 #define IDC_TRAY_RESTORE 900
 #define IDC_TRAY_EXIT    901
-#define IDT_REASSERT_TIMER 2
 
 static HWND g_hStatus, g_hComboMode, g_hSliderBright, g_hLblAngle, g_hLblConcurrent;
 static HWND g_hSwatchBreath, g_hSwatchReact;
@@ -231,9 +232,17 @@ int enter_custom_mode(void) {
     return 0;
 }
 
-int reassert_mode_only(void) {
-    unsigned char step2[9] = {0x00,0x08,0x02,0x33,0x00,0x32,0x00,0x00,0x00};
-    return hid_send_feature_report(g_h, step2, 9) < 0 ? -1 : 0;
+int log_exclusive_status(void) {
+    HANDLE probe = CreateFileA(DEVICE_PATH, GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+        FILE_FLAG_OVERLAPPED, 0);
+    if (probe == INVALID_HANDLE_VALUE && GetLastError() == ERROR_SHARING_VIOLATION) {
+        log_event("device lock: EXCLUSIVE - no other process can open the RGB interface");
+        return 1;
+    }
+    if (probe != INVALID_HANDLE_VALUE) CloseHandle(probe);
+    log_event("device lock: SHARED - exclusive open not in effect; GCUBridge takeovers remain possible");
+    return 0;
 }
 
 int reconnect_device(void) {
@@ -265,6 +274,7 @@ int reconnect_device(void) {
         return -1;
     }
     log_event("reconnect_device: success");
+    log_exclusive_status();
     LeaveCriticalSection(&g_deviceLock);
     return 0;
 }
@@ -291,25 +301,242 @@ void request_reconnect(const char *reason) {
     if (h) CloseHandle(h);
 }
 
-DWORD WINAPI reassert_thread_proc(LPVOID p) {
-    (void)p;
-    ULONGLONG t0 = GetTickCount64();
-    EnterCriticalSection(&g_deviceLock);
-    ULONGLONG t1 = GetTickCount64();
-    if (g_h) {
-        int r = reassert_mode_only();
-        ULONGLONG t2 = GetTickCount64();
-        char logbuf[192];
-        sprintf(logbuf, "periodic reassert: lock_wait=%llums call_time=%llums result=%s",
-            (unsigned long long)(t1-t0), (unsigned long long)(t2-t1), r < 0 ? "FAIL" : "ok");
-        log_event(logbuf);
-        if (r < 0) {
-            LeaveCriticalSection(&g_deviceLock);
-            request_reconnect("reassert-failed");
-            return 0;
+#define TASK_NAME L"Better RGB by TheYamo"
+#define VENDOR_SERVICE_DEFAULT "GCUBridge"
+
+static HWND g_btnAutostart;
+
+static int is_elevated(void) {
+    HANDLE tok;
+    TOKEN_ELEVATION te;
+    DWORD n;
+    int r = 0;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) {
+        if (GetTokenInformation(tok, TokenElevation, &te, sizeof(te), &n))
+            r = te.TokenIsElevated ? 1 : 0;
+        CloseHandle(tok);
+    }
+    return r;
+}
+
+static int find_vendor_service(char *out, DWORD outLen) {
+    SC_HANDLE scm = OpenSCManagerA(NULL, NULL, SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE);
+    if (!scm) return 0;
+    SC_HANDLE svc = OpenServiceA(scm, VENDOR_SERVICE_DEFAULT, SERVICE_QUERY_STATUS);
+    if (svc) {
+        CloseServiceHandle(svc);
+        CloseServiceHandle(scm);
+        strncpy(out, VENDOR_SERVICE_DEFAULT, outLen - 1);
+        out[outLen - 1] = 0;
+        return 1;
+    }
+    int found = 0;
+    DWORD bytesNeeded = 0, count = 0, resume = 0;
+    EnumServicesStatusExA(scm, SC_ENUM_PROCESS_INFO, SERVICE_WIN32, SERVICE_STATE_ALL,
+        NULL, 0, &bytesNeeded, &count, &resume, NULL);
+    if (bytesNeeded > 0) {
+        BYTE *buf = (BYTE *)malloc(bytesNeeded);
+        if (buf && EnumServicesStatusExA(scm, SC_ENUM_PROCESS_INFO, SERVICE_WIN32, SERVICE_STATE_ALL,
+                buf, bytesNeeded, &bytesNeeded, &count, &resume, NULL)) {
+            ENUM_SERVICE_STATUS_PROCESSA *e = (ENUM_SERVICE_STATUS_PROCESSA *)buf;
+            for (DWORD i = 0; i < count && !found; i++) {
+                char low[256];
+                strncpy(low, e[i].lpServiceName, sizeof(low) - 1);
+                low[sizeof(low) - 1] = 0;
+                for (char *p = low; *p; p++) *p = (char)tolower((unsigned char)*p);
+                if (strstr(low, "gcu")) {
+                    strncpy(out, e[i].lpServiceName, outLen - 1);
+                    out[outLen - 1] = 0;
+                    found = 1;
+                }
+            }
+        }
+        if (buf) free(buf);
+    }
+    CloseServiceHandle(scm);
+    return found;
+}
+
+static int stop_vendor_service(const char *name) {
+    SC_HANDLE scm = OpenSCManagerA(NULL, NULL, SC_MANAGER_CONNECT);
+    if (!scm) return -1;
+    SC_HANDLE svc = OpenServiceA(scm, name, SERVICE_STOP | SERVICE_QUERY_STATUS);
+    if (!svc) {
+        CloseServiceHandle(scm);
+        return -1;
+    }
+    SERVICE_STATUS ss;
+    memset(&ss, 0, sizeof(ss));
+    QueryServiceStatus(svc, &ss);
+    if (ss.dwCurrentState != SERVICE_STOPPED) {
+        ControlService(svc, SERVICE_CONTROL_STOP, &ss);
+        for (int i = 0; i < 100; i++) {
+            if (!QueryServiceStatus(svc, &ss)) break;
+            if (ss.dwCurrentState == SERVICE_STOPPED) break;
+            Sleep(100);
         }
     }
+    int ok = (ss.dwCurrentState == SERVICE_STOPPED) ? 0 : -1;
+    CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+    return ok;
+}
+
+static int start_vendor_service(const char *name) {
+    SC_HANDLE scm = OpenSCManagerA(NULL, NULL, SC_MANAGER_CONNECT);
+    if (!scm) return -1;
+    SC_HANDLE svc = OpenServiceA(scm, name, SERVICE_START);
+    if (!svc) {
+        CloseServiceHandle(scm);
+        return -1;
+    }
+    int ok = 0;
+    if (!StartServiceA(svc, 0, NULL) && GetLastError() != ERROR_SERVICE_ALREADY_RUNNING)
+        ok = -1;
+    CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+    return ok;
+}
+
+static int fix_lock_now(void) {
+    char svcName[256];
+    char lb[384];
+    if (!find_vendor_service(svcName, sizeof(svcName))) {
+        log_event("fix_lock: vendor service not found, cannot fix automatically");
+        return -1;
+    }
+    sprintf(lb, "fix_lock: stopping vendor service '%s'", svcName);
+    log_event(lb);
+    if (stop_vendor_service(svcName) < 0) {
+        log_event("fix_lock: could not stop vendor service");
+        return -1;
+    }
+    EnterCriticalSection(&g_deviceLock);
+    if (g_h) hid_close(g_h);
+    g_h = hid_open_path(DEVICE_PATH);
+    int ok = (g_h && enter_custom_mode() == 0) ? 0 : -1;
     LeaveCriticalSection(&g_deviceLock);
+    sprintf(lb, "fix_lock: exclusive reopen result=%s, restarting vendor service '%s'",
+        ok == 0 ? "ok" : "FAIL", svcName);
+    log_event(lb);
+    start_vendor_service(svcName);
+    return ok;
+}
+
+static int run_schtasks(const wchar_t *args) {
+    wchar_t cmdLine[1200];
+    _snwprintf(cmdLine, 1199, L"schtasks.exe %ls", args);
+    cmdLine[1199] = 0;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    memset(&pi, 0, sizeof(pi));
+    si.cb = sizeof(si);
+    DWORD code = 1;
+    if (CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 20000);
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+    return (int)code;
+}
+
+static int autostart_task_exists(void) {
+    return run_schtasks(L"/Query /TN \"" TASK_NAME L"\"") == 0;
+}
+
+static int autostart_install(void) {
+    wchar_t exe[MAX_PATH];
+    wchar_t args[1200];
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    _snwprintf(args, 1199, L"/Create /F /TN \"%ls\" /TR \"\\\"%ls\\\"\" /SC ONLOGON /RL HIGHEST", TASK_NAME, exe);
+    args[1199] = 0;
+    return run_schtasks(args) == 0 ? 0 : -1;
+}
+
+static int autostart_remove(void) {
+    return run_schtasks(L"/Delete /F /TN \"" TASK_NAME L"\"") == 0 ? 0 : -1;
+}
+
+static void autostart_apply(int install) {
+    int r = install ? autostart_install() : autostart_remove();
+    const wchar_t *msg;
+    if (r == 0 && install)
+        msg = L"Auto-start at login is now ENABLED.\n"
+              L"The app will launch automatically with admin rights at every login, with no UAC prompt.\n\n"
+              L"Oturum acilisinda otomatik baslatma ACILDI.\n"
+              L"Uygulama her oturum acilisinda yonetici haklariyla, UAC sorusu olmadan kendiliginden baslayacak.";
+    else if (r == 0)
+        msg = L"Auto-start at login is now DISABLED.\n\n"
+              L"Oturum acilisinda otomatik baslatma KAPATILDI.";
+    else
+        msg = L"The operation failed. Please try again.\n\n"
+              L"Islem basarisiz oldu. Lutfen tekrar deneyin.";
+    MessageBoxW(NULL, msg, L"Better RGB by TheYamo", MB_OK | (r == 0 ? MB_ICONINFORMATION : MB_ICONERROR));
+}
+
+static int relaunch_elevated(const wchar_t *args, int waitForExit) {
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    SHELLEXECUTEINFOW sei;
+    memset(&sei, 0, sizeof(sei));
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exe;
+    sei.lpParameters = args;
+    sei.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&sei)) return -1;
+    if (waitForExit && sei.hProcess) WaitForSingleObject(sei.hProcess, 120000);
+    if (sei.hProcess) CloseHandle(sei.hProcess);
+    return 0;
+}
+
+static void update_autostart_button(void) {
+    if (!g_btnAutostart) return;
+    SetWindowTextW(g_btnAutostart, autostart_task_exists()
+        ? L"Auto-Start at Login: ON / Otomatik Baslatma: ACIK"
+        : L"Auto-Start at Login: OFF / Otomatik Baslatma: KAPALI");
+    InvalidateRect(g_btnAutostart, NULL, TRUE);
+}
+
+static volatile LONG g_monitorStop = 0;
+
+static void hexdump_to_log(const char *prefix, const unsigned char *d, int n) {
+    char line[64 + 65*3 + 16];
+    int off = sprintf(line, "%s (%d bytes):", prefix, n);
+    for (int i = 0; i < n && off < (int)sizeof(line) - 4; i++)
+        off += sprintf(line + off, " %02X", d[i]);
+    log_event(line);
+}
+
+DWORD WINAPI ec_monitor_thread(LPVOID p) {
+    (void)p;
+    unsigned char buf[65];
+    hid_device *h = NULL;
+    log_event("ec_monitor: started (passive, own read-only handle)");
+    while (!g_monitorStop) {
+        if (!h) {
+
+            if (g_reconnectInProgress) { Sleep(250); continue; }
+            h = hid_open_path(DEVICE_PATH);
+            if (!h) { Sleep(1000); continue; }
+            log_event("ec_monitor: monitor handle opened");
+        }
+        int n = hid_read_timeout(h, buf, (int)sizeof(buf), 500);
+        if (n > 0) {
+            hexdump_to_log("ec_monitor: IN report from EC", buf, n);
+        } else if (n < 0) {
+            log_event("ec_monitor: read error, closing and reopening handle");
+            hid_close(h);
+            h = NULL;
+            Sleep(500);
+        }
+
+    }
+    if (h) hid_close(h);
+    log_event("ec_monitor: stopped");
     return 0;
 }
 
@@ -343,11 +570,6 @@ int send_frame(unsigned char *buf) {
     ULONGLONG tDone = GetTickCount64();
     LeaveCriticalSection(&g_deviceLock);
 
-    // v2.1 diagnostic: a normal send_frame should take a few ms at most.
-    // If either waiting for the lock or the actual USB calls took unusually
-    // long, log it - this is how we'll catch "hid_write silently blocked
-    // for several seconds instead of failing" without flooding the log
-    // during normal operation (this runs every ~10ms otherwise).
     ULONGLONG lockWait = tLocked - tStart;
     ULONGLONG callTime = tDone - tLocked;
     if (lockWait > 200 || callTime > 200) {
@@ -383,7 +605,6 @@ int compute_prob_count(int target, int minCount, int maxCount) {
 }
 
 double get_key_x(const KeyEntry *k) {
-
 
     if (strcmp(k->name,"AltGr")==0)         return 10.5;
     if (strcmp(k->name,"CopilotKey")==0)    return 11.5;
@@ -1017,21 +1238,6 @@ void start_mode(int mode) {
     log_event(logbuf);
     stop_current_effect();
 
-    // v2.2 DIAGNOSTIC TEST: re-send the FULL EC init sequence (prep1 +
-    // clear frame + prep2) on EVERY mode transition (mode->mode and
-    // STOP->mode), not just at app startup / reconnect.
-    //
-    // Hypothesis: the "RGB dies silently in the first 30-60 min after
-    // boot" bug is the EC dropping out of custom mode. hid calls keep
-    // succeeding (so nothing is logged and reconnect never triggers),
-    // but the EC ignores the per-frame prep3 + chunk stream. Evidence:
-    // launching a SECOND instance (whose WinMain runs enter_custom_mode)
-    // revives the first instance's output.
-    //
-    // If, while the keyboard is "dead", simply switching modes in THIS
-    // app now revives it (no second instance needed), the hypothesis is
-    // confirmed -> next step: inject prep1/prep2 periodically between
-    // frames, or hunt down what resets the EC mode after boot.
     EnterCriticalSection(&g_deviceLock);
     int reinit = g_h ? enter_custom_mode() : -1;
     LeaveCriticalSection(&g_deviceLock);
@@ -1401,6 +1607,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_hStatus = CreateWindow(L"STATIC", L"Active Mode: None", WS_CHILD|WS_VISIBLE|SS_LEFT,
                 20, 465, 340, 25, hwnd, (HMENU)IDC_STATIC_STATUS, NULL, NULL);
 
+            g_btnAutostart = mk_button(hwnd, L"", IDC_BTN_AUTOSTART, 20, 497, 340, 30);
+            update_autostart_button();
+
             set_swatch_color(g_hSwatchBreath, g_breathColor);
             set_swatch_color(g_hSwatchReact, g_reactiveColor);
 
@@ -1482,6 +1691,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
+        case WM_ACTIVATE:
+            if (LOWORD(wp) != WA_INACTIVE) update_autostart_button();
+            return 0;
+
         case WM_COMMAND:
             if (HIWORD(wp) == CBN_SELCHANGE && (HWND)lp == g_hComboMode) {
                 int sel = (int)SendMessage(g_hComboMode, CB_GETCURSEL, 0, 0);
@@ -1548,6 +1761,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
             }
             switch (LOWORD(wp)) {
+                case IDC_BTN_AUTOSTART: {
+                    int exists = autostart_task_exists();
+                    if (is_elevated()) {
+                        autostart_apply(exists ? 0 : 1);
+                    } else {
+                        relaunch_elevated(exists ? L"--remove-autostart" : L"--install-autostart", 0);
+                    }
+                    update_autostart_button();
+                    return 0;
+                }
                 case IDC_BTN_STOP:
                     stop_current_effect();
                     set_status(L"Active Mode: None");
@@ -1618,13 +1841,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
 
-        case WM_TIMER:
-            if (wp == IDT_REASSERT_TIMER) {
-                HANDLE h = CreateThread(NULL, 0, reassert_thread_proc, NULL, 0, NULL);
-                if (h) CloseHandle(h);
-            }
-            return 0;
-
         case WM_POWERBROADCAST: {
             char logbuf[128];
             sprintf(logbuf, "WM_POWERBROADCAST received, wParam=%lu", (unsigned long)wp);
@@ -1634,7 +1850,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_DESTROY:
-            KillTimer(hwnd, IDT_REASSERT_TIMER);
             stop_current_effect();
             Shell_NotifyIcon(NIM_DELETE, &g_nid);
             PostQuitMessage(0);
@@ -1647,19 +1862,71 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
     (void)hPrev; (void)cmd; (void)show;
     srand((unsigned int)time(NULL));
 
+    LPWSTR cl = GetCommandLineW();
+    if (wcsstr(cl, L"--install-autostart")) {
+        autostart_apply(1);
+        return 0;
+    }
+    if (wcsstr(cl, L"--remove-autostart")) {
+        autostart_apply(0);
+        return 0;
+    }
+
     InitializeCriticalSection(&g_deviceLock);
     hid_init();
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
     g_h = hid_open_path(DEVICE_PATH);
     if (!g_h) {
-        MessageBox(NULL, L"Could not open device! Make sure GCUBridge service is stopped.", L"Error", MB_OK|MB_ICONERROR);
+        MessageBoxW(NULL,
+            L"Could not open the keyboard device (VID_048D / PID_600B).\n"
+            L"Make sure this laptop has the supported ITE8291 keyboard controller.\n\n"
+            L"Klavye cihazi acilamadi (VID_048D / PID_600B).\n"
+            L"Bu laptopta desteklenen ITE8291 klavye kontrolcusunun bulundugundan emin olun.",
+            L"Better RGB - Error / Hata", MB_OK|MB_ICONERROR);
         return 1;
     }
     if (enter_custom_mode() < 0) {
-        MessageBox(NULL, L"Could not enter per-key mode!", L"Error", MB_OK|MB_ICONERROR);
+        MessageBoxW(NULL,
+            L"Could not enter per-key mode!\n\nPer-key moduna girilemedi!",
+            L"Better RGB - Error / Hata", MB_OK|MB_ICONERROR);
         hid_close(g_h); hid_exit();
         return 1;
     }
+    int excl = log_exclusive_status();
+    if (!excl) {
+        if (is_elevated()) {
+            if (fix_lock_now() == 0) {
+                log_exclusive_status();
+            } else if (!g_h) {
+                MessageBoxW(NULL,
+                    L"Automatic fix failed and the device could not be reopened.\n\n"
+                    L"Otomatik duzeltme basarisiz oldu ve cihaz yeniden acilamadi.",
+                    L"Better RGB - Error / Hata", MB_OK|MB_ICONERROR);
+                hid_exit();
+                return 1;
+            }
+        } else {
+            int ans = MessageBoxW(NULL,
+                L"The vendor service (GCUBridge / Control Center) is currently holding the keyboard's RGB interface, so it can override this app's lighting at any moment.\n\n"
+                L"Fix it now? The service will be restarted for a few seconds (fan / power functions are not affected) and the app will relaunch with the device locked. Windows will ask for administrator approval.\n\n"
+                L"Uretici servisi (GCUBridge / Kontrol Merkezi) su anda klavyenin RGB arayuzunu elinde tutuyor; bu yuzden bu uygulamanin isiklarini istedigi an ezebilir.\n\n"
+                L"Simdi duzeltilsin mi? Servis birkac saniyeligine yeniden baslatilacak (fan / guc islevleri etkilenmez) ve uygulama cihaz kilitli sekilde yeniden acilacak. Windows yonetici onayi isteyecek.",
+                L"Better RGB - Device Lock / Cihaz Kilidi", MB_YESNO|MB_ICONWARNING);
+            if (ans == IDYES && relaunch_elevated(NULL, 0) == 0) {
+                hid_close(g_h);
+                hid_exit();
+                DeleteCriticalSection(&g_deviceLock);
+                return 0;
+            }
+        }
+    }
+
+#define ENABLE_EC_MONITOR 0
+#if ENABLE_EC_MONITOR
+    HANDLE hMonitor = CreateThread(NULL, 0, ec_monitor_thread, NULL, 0, NULL);
+#else
+    HANDLE hMonitor = NULL;
+#endif
 
     INITCOMMONCONTROLSEX icc; icc.dwSize = sizeof(icc); icc.dwICC = ICC_BAR_CLASSES;
     InitCommonControlsEx(&icc);
@@ -1687,7 +1954,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
 
     HWND hwnd = CreateWindow(wc.lpszClassName, L"Better RGB by TheYamo",
         WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 400, 570,
+        CW_USEDEFAULT, CW_USEDEFAULT, 400, 605,
         NULL, NULL, hInst, NULL);
     if (!hwnd) {
         MessageBox(NULL, L"CreateWindow failed!", L"Error", MB_OK|MB_ICONERROR);
@@ -1716,12 +1983,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
         log_event("RegisterDeviceNotification succeeded");
     }
 
-    // TEMPORARILY DISABLED for a controlled test - suspecting the periodic
-    // reassert command itself might be what's causing the brief freezes,
-    // rather than fixing them. Re-enable by uncommenting if testing shows
-    // the freezes still happen without it.
-    // SetTimer(hwnd, IDT_REASSERT_TIMER, 15000, NULL);
-
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
@@ -1729,6 +1990,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
     }
 
     if (hPowerNotify) UnregisterSuspendResumeNotification(hPowerNotify);
+
+    InterlockedExchange(&g_monitorStop, 1);
+    if (hMonitor) {
+        WaitForSingleObject(hMonitor, 1500);
+        CloseHandle(hMonitor);
+    }
+
     hid_close(g_h);
     hid_exit();
     DeleteCriticalSection(&g_deviceLock);

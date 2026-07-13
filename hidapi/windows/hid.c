@@ -358,18 +358,29 @@ static HANDLE open_device(const wchar_t *path, BOOL open_rw)
 {
 	HANDLE handle;
 	DWORD desired_access = (open_rw)? (GENERIC_WRITE | GENERIC_READ): 0;
-	DWORD share_mode = FILE_SHARE_READ|FILE_SHARE_WRITE;
-
+	// PATCH BETTER_RGB
+	if (open_rw)
+	{
+		handle = CreateFileW(path,
+			desired_access,
+			0, /* exclusive */
+			NULL,
+			OPEN_EXISTING,
+			FILE_FLAG_OVERLAPPED,
+			0);
+		if (handle != INVALID_HANDLE_VALUE)
+			return handle;
+	}
 	handle = CreateFileW(path,
 		desired_access,
-		share_mode,
+		FILE_SHARE_READ|FILE_SHARE_WRITE,
 		NULL,
 		OPEN_EXISTING,
-		FILE_FLAG_OVERLAPPED,/*FILE_ATTRIBUTE_NORMAL,*/
+		FILE_FLAG_OVERLAPPED,
 		0);
-
 	return handle;
 }
+
 
 HID_API_EXPORT const struct hid_api_version* HID_API_CALL hid_version(void)
 {

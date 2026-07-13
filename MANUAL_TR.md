@@ -4,21 +4,21 @@ Tongfang/ITE8291 tabanlı klavyeler (VID_048D, PID_600B) için özel per-key RGB
 
 ---
 
-## 1. Başlamadan önce — önemli kurulum adımı
+## 1. Üretici yazılımıyla birlikte nasıl çalışır (v2.2 cihaz kilidi)
 
-Bu uygulama, klavyenin USB arayüzüyle doğrudan konuşuyor. Üretici firmanın kendi RGB servisi ("GCUBridge") da aynı arayüzle konuşuyor — ikisi aynı anda ışıkları kontrol etmeye çalışırsa titreme, çakışma, hatta nadir durumlarda klavyenin gömülü kontrolcüsünün (EC) tamamen kilitlenmesi gibi sorunlar yaşanabilir.
+Bu uygulama, klavyenin USB RGB arayüzüyle doğrudan konuşuyor. Üreticinin kendi servisi ("GCUBridge" / Kontrol Merkezi) de aynı arayüzü kullanıyor ve — zor yoldan keşfedildiği üzere — kendi seçili aydınlatma durumunu belirli aralıklarla EC'ye yeniden yazarak başka bir programın ayarladığı her şeyi sessizce eziyor.
 
-**GCUBridge Windows servisini kapatmana gerek yok.** Kapatırsan, Kontrol Merkezi yazılımının RGB dışındaki diğer özelliklerini (fan eğrileri, performans modları, vs. — sisteminde yönettiği her ne varsa) kaybedersin.
+v2.2'den itibaren uygulama bunu sürücü seviyesinde çözüyor: klavyenin RGB arayüzünü **paylaşımsız (exclusive)** açıyor. Uygulama çalıştığı sürece başka hiçbir process (üretici servisi dahil) o arayüzü açamıyor; dolayısıyla ışıklarını hiçbir şey ezemiyor.
 
-**Bunun yerine yapman gereken:**
+Pratikte bunun anlamı:
 
-1. Üreticinin **Kontrol Merkezi** uygulamasını aç.
-2. Klavye aydınlatması / RGB bölümünü bul.
-3. O uygulama içinden **klavye aydınlatmasını KAPAT**.
+- **Artık Kontrol Merkezi'nde herhangi bir aydınlatma ayarı değiştirmen gerekmiyor.** Eski sürümler önce orada klavye aydınlatmasını kapatmanı istiyordu — o adım kalktı.
+- **Üretici servisi normal şekilde çalışmaya devam ediyor.** Fan eğrileri, güç limitleri ve performans modları hiç etkilenmiyor; bu işlevler bu arayüzü kullanmıyor.
+- **Uygulama çalışırken Kontrol Merkezi'nin klavye aydınlatma sayfası yüklenmez.** Bu kasıtlı — kilidin çalıştığının göstergesi. Uygulamayı kapattığında üreticinin aydınlatma kontrolleri tekrar kullanılabilir hale gelir.
 
-Aydınlatma orada kapalı olduğu sürece, GCUBridge servisi diğer işlevleri için arka planda normal şekilde çalışmaya devam edebilir ve RGB arayüzüne hiç dokunmaz — böylece bu uygulama onu güvenle kontrol edebilir.
+**İlk çalıştırma:** üretici servisi genellikle boot sırasında, sen daha bir şey başlatamadan arayüzü kapar. Uygulama açıldığında kilidin kendisinde olmadığını tespit ederse, düzeltme öneren bir diyalog gösterir: üretici servisi birkaç saniyeliğine yeniden başlatılır (diğer işlevlerine dokunulmaz) ve uygulama kilidi almış olarak yeniden açılır. Windows bir kez yönetici onayı ister.
 
-⚠️ **Kontrol Merkezi'nde aydınlatma açıkken bu uygulamayı asla aynı anda çalıştırma.** Her zaman önce orada kapat.
+**Bunu tamamen otomatik hale getirmek için** **Auto-Start at Login** düğmesini kullan (Bölüm 4). Her oturum açılışında uygulamayı yönetici haklarıyla başlatan bir Zamanlanmış Görev kurar — UAC sorusu yok, diyalog yok; uygulama her girişte kilidi sessizce alır.
 
 ---
 
@@ -26,21 +26,19 @@ Aydınlatma orada kapalı olduğu sürece, GCUBridge servisi diğer işlevleri i
 
 İhtiyacın olanlar:
 - `mingw-w64` (Windows için gcc), `windres` dahil
-- [hidapi](https://github.com/libusb/hidapi) kaynak kodu (sadece `hidapi/hidapi.h` ve `windows/hid.c` gerekli)
 
-Aynı klasörde bulunması gereken dosyalar:
-- (ana kaynak kod)
-- `resource.rc`
-- `resource.h`
-- `app.manifest`
-- `app.ico`
+Depo, [hidapi](https://github.com/libusb/hidapi)'nin kendi kopyasını `hidapi/` klasöründe barındırır. **Bu paketlenmiş kopyayı kullan** — içindeki `windows/hid.c` küçük ama kritik bir yama taşıyor: `open_device` cihazı önce `dwShareMode = 0` (exclusive) ile açmayı dener, ancak bu başarısız olursa orijinal paylaşımlı moda düşer. Bölüm 1'de anlatılan cihaz kilidi, yamasız hidapi ile çalışmaz.
 
-Derleme (o klasörden, iki adım):
+Gerekli dosyalar:
+- `better_rgb.c` (ana kaynak kod)
+- `resource.rc`, `resource.h`, `app.manifest`, `app.ico`
+- paketlenmiş `hidapi/` klasörü
+
+Derleme (proje klasöründen, iki adım):
 ```
 windres resource.rc -O coff -o resource.o
-gcc (ana kaynak kod) resource.o HIDAPI_YOLU\windows\hid.c -IHIDAPI_YOLU\hidapi -o rgb_gui.exe -lsetupapi -lhid -lm -mwindows -lcomdlg32 -lcomctl32 -lshell32
+gcc better_rgb.c resource.o hidapi\windows\hid.c -Ihidapi\hidapi -o "Better RGB by TheYamo.exe" -lsetupapi -lhid -lm -mwindows -lcomdlg32 -lcomctl32 -lshell32 -ladvapi32 -O2
 ```
-`HIDAPI_YOLU` kısmını hidapi kaynak klasörünü nereye koyduysan onunla değiştir.
 
 **Not:** yol içinde boşluk içeren bir klasör varsa, o yolu tamamen çift tırnak içine al.
 
@@ -48,9 +46,13 @@ gcc (ana kaynak kod) resource.o HIDAPI_YOLU\windows\hid.c -IHIDAPI_YOLU\hidapi -
 
 ## 3. Uygulamayı çalıştırma
 
-`rgb_gui.exe`'ye çift tıkla (ya da terminalden çalıştır). Herhangi bir konsol penceresi açılmaz — bu normal, pencereli bir uygulama.
+Exe'ye çift tıkla (ya da terminalden çalıştır). Herhangi bir konsol penceresi açılmaz — bu normal, pencereli bir uygulama.
 
-Klavye bulunamazsa ("Could not open device" hatası çıkarsa), en yaygın sebep Kontrol Merkezi'nde aydınlatmanın hâlâ açık olmasıdır — 1. Bölüm'e geri dön.
+- Uygulama cihaz kilidini zaten alabiliyorsa (örn. Auto-Start göreviyle başlatıldıysa ya da üretici servisi arayüzü bırakmışsa), sessizce açılır.
+- Üretici servisi arayüzü elinde tutuyorsa, Bölüm 1'de anlatılan düzeltme diyaloğunu görürsün. **Evet** dersen bir UAC onayı, kısa bir servis yeniden başlatması olur ve uygulama kilitli şekilde yeniden açılır. **Hayır** dersen uygulama yine çalışır, ama üretici yazılımı ışıklarını rastgele anlarda ezebilir.
+- Uygulama yönetici haklarıyla başlatılmışsa ve arayüzün kapılmış olduğunu görürse, hiç diyalog göstermeden durumu kendisi düzeltir — Auto-Start görevinin her oturum açılışında yaptığı tam olarak budur.
+
+Kullanıcıya gösterilen tüm diyaloglar hem İngilizce hem Türkçe'dir.
 
 ---
 
@@ -60,6 +62,7 @@ Klavye bulunamazsa ("Could not open device" hatası çıkarsa), en yaygın sebep
 - **Stop (Turn Off Lights)** — mevcut efekti durdurur ve klavyeyi kapatır.
 - **Brightness** — alttaki kaydırıcı, hangi mod aktif olursa olsun her zaman görünür. Genel çıktı parlaklığını (0-100%) ölçekler.
 - **Active Mode** yazısı — şu an hangi efektin çalıştığını gösterir.
+- **Auto-Start at Login** düğmesi — mevcut durumu (ON/OFF) gösterir ve değiştirir. AÇIK yapmak, her oturum açılışında uygulamayı yönetici haklarıyla başlatan bir Windows Zamanlanmış Görevi ("Better RGB by TheYamo") kurar; böylece cihaz kilidi her girişte UAC sorusu olmadan sessizce alınır. KAPALI yapmak görevi kaldırır. Görevin kurulması/kaldırılması işleminin kendisi bir kez yönetici onayı ister.
 
 Pencereyi küçültmek, onu görev çubuğu yerine sistem tepsisine (saat yanındaki gizli simgeler alanı) gönderir — uygulama arka planda çalışmaya devam eder. Tray simgesine çift tıklayarak pencereyi geri getirebilir, ya da sağ tıklayarak Aç/Çıkış menüsüne ulaşabilirsin.
 
@@ -123,12 +126,24 @@ Ayarlar:
 - **Density** — Diagonal Streaks ve Laser Sweep stillerini etkiler: aynı anda kaç çizginin aktif olacağı.
 - **Color Count** — 1 ila 3, Rain'deki ile aynı tıkla-ata sistemi.
 
+### Static (Sabit Bölgeler)
+Hareketsiz bir düzen: klavye, senin belirlediğin renkli bölgelere ayrılır.
+- **Horizontal / Vertical** — bölme yönünü seç. Horizontal, yukarıdan aşağıya en fazla **6** yatay bant oluşturur; Vertical, yan yana en fazla **10** dikey bant yerleştirir.
+- **Zones** — klavyenin kaç bölgeye ayrılacağını seçen kaydırıcı (üst sınır, seçilen yöne bağlıdır).
+- **Bölge seçici + Pick Color** — açılır kutudan bir bölge seç, sonra rengini ata. Her bölge için tekrarla.
+
 ---
 
 ## 6. Sorun Giderme
 
-**Açılışta "Could not open device" hatası.**
-Kontrol Merkezi'nde aydınlatma hâlâ açık — orada kapat (Bölüm 1) ve tekrar dene.
+**Açılışta "Could not open the keyboard device" hatası.**
+Desteklenen RGB arayüzü (VID_048D / PID_600B, ITE8291) bu makinede bulunamadı. Uygulama özel olarak bu kontrolcüyü hedefler; farklı bir klavye/kontrolcüde çalışamaz.
+
+**Kontrol Merkezi'nin klavye aydınlatma sayfası yüklenmiyor.**
+Bu uygulama çalışırken beklenen durum — cihaz kilidi (Bölüm 1), üretici yazılımının RGB arayüzünü açmasını engelliyor. Bu uygulamayı kapattığında üreticinin aydınlatma sayfası tekrar çalışır.
+
+**Işıklar kendiliğinden sönüyor / yerine üreticinin rengi geliyordu (eski sürümler).**
+Bu, üretici servisinin arayüzü ezmesinin tipik belirtisiydi ve v2.2'deki exclusive kilidin ortadan kaldırdığı şey tam olarak bu. v2.2'de hâlâ görüyorsan, uygulama muhtemelen kilitsiz çalışıyordur (düzeltme diyaloğunu reddettin ya da servis arayüzü önce kaptı). Uygulamayı yeniden başlatıp düzeltmeyi kabul et, ya da kalıcı sessiz çözüm için Auto-Start at Login'i aç.
 
 **Klavye ışıkları hem bu uygulamaya hem üretici yazılımına tepki vermemeye başlıyor.**
 Klavyenin gömülü kontrolcüsü kilitlenmiş — bu bilinen bir donanımsal tuhaflık, veri bozulması ya da kalıcı hasar değil. Kurtarmak için:

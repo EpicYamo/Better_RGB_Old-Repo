@@ -4,21 +4,21 @@ A custom per-key RGB control application for Tongfang/ITE8291-based keyboards (V
 
 ---
 
-## 1. Before you start — important setup step
+## 1. How this app coexists with the vendor software (v2.2 device lock)
 
-This application talks directly to the keyboard's USB interface. The vendor's own RGB service ("GCUBridge") also talks to the same interface, and if both try to control the lighting at the same time, you'll get flickering, conflicts, or in rare cases the keyboard's embedded controller can lock up entirely.
+This application talks directly to the keyboard's USB RGB interface. The vendor's own service ("GCUBridge" / Control Center) uses the same interface, and — as discovered the hard way — it periodically re-applies its own selected lighting state, silently overriding anything another program has set.
 
-**You do not need to disable the GCUBridge Windows service.** If you do, you'll lose the *other* features of the vendor Control Center software (fan curves, performance modes, etc. — whatever else it manages on your system).
+Since v2.2 the app solves this at the driver level: it opens the keyboard's RGB interface **exclusively**. While the app is running, no other process (including the vendor service) can open that interface at all, so nothing can override your lighting.
 
-**What you must do instead:**
+What this means in practice:
 
-1. Open the vendor's **Control Center** application.
-2. Find the keyboard lighting / RGB section.
-3. **Turn keyboard lighting OFF** inside that app.
+- **You no longer need to change any lighting setting in the Control Center.** Older versions asked you to turn keyboard lighting off there first — that step is gone.
+- **The vendor service keeps running normally.** Fan curves, power limits, and performance modes are completely unaffected; they don't use this interface.
+- **The Control Center's keyboard-lighting page will not load while this app is running.** That is intentional — it's the lock working. Close this app and the vendor's lighting controls become available again.
 
-As long as lighting is switched off there, the GCUBridge service can keep running normally in the background for its other functions, and it will not touch the RGB interface — leaving it free for this application to control safely.
+**First run:** the vendor service usually grabs the interface at boot, before you can launch anything. If the app starts and detects it doesn't hold the lock, it shows a dialog offering to fix it: the vendor service is restarted for a few seconds (its other functions are untouched) and the app relaunches holding the lock. Windows will ask for administrator approval once.
 
-⚠️ **Do not run this application while lighting is enabled in the Control Center at the same time.** Always disable it there first.
+**To make this fully automatic**, use the **Auto-Start at Login** button (see Section 4). It installs a Scheduled Task that launches the app with administrator rights at every login — no UAC prompt, no dialogs; the app silently takes the lock every time you log in.
 
 ---
 
@@ -26,21 +26,19 @@ As long as lighting is switched off there, the GCUBridge service can keep runnin
 
 You need:
 - `mingw-w64` (gcc for Windows) with `windres`
-- The [hidapi](https://github.com/libusb/hidapi) source (only `hidapi/hidapi.h` and `windows/hid.c` are needed)
 
-Files required in the same folder:
-- (main source)
-- `resource.rc`
-- `resource.h`
-- `app.manifest`
-- `app.ico`
+The repository bundles its own copy of [hidapi](https://github.com/libusb/hidapi) in the `hidapi/` folder. **Use the bundled copy** — its `windows/hid.c` carries a small but essential patch: `open_device` first tries to open the device with `dwShareMode = 0` (exclusive) and only falls back to the stock shared mode if that fails. The exclusive device lock described in Section 1 does not work with an unpatched hidapi.
 
-Build (two steps, from that folder):
+Files required:
+- `better_rgb.c` (main source)
+- `resource.rc`, `resource.h`, `app.manifest`, `app.ico`
+- the bundled `hidapi/` folder
+
+Build (two steps, from the project folder):
 ```
 windres resource.rc -O coff -o resource.o
-gcc (main source) resource.o PATH_TO_HIDAPI\windows\hid.c -IPATH_TO_HIDAPI\hidapi -o rgb_gui.exe -lsetupapi -lhid -lm -mwindows -lcomdlg32 -lcomctl32 -lshell32
+gcc better_rgb.c resource.o hidapi\windows\hid.c -Ihidapi\hidapi -o "Better RGB by TheYamo.exe" -lsetupapi -lhid -lm -mwindows -lcomdlg32 -lcomctl32 -lshell32 -ladvapi32 -O2
 ```
-Replace `PATH_TO_HIDAPI` with wherever you placed the hidapi source folder.
 
 **Note:** if any folder in your path contains spaces, wrap that whole path in double quotes.
 
@@ -48,9 +46,13 @@ Replace `PATH_TO_HIDAPI` with wherever you placed the hidapi source folder.
 
 ## 3. Running the application
 
-Double-click `rgb_gui.exe` (or run it from a terminal). No console window will appear — this is a normal windowed application.
+Double-click the exe (or run it from a terminal). No console window will appear — this is a normal windowed application.
 
-If the keyboard can't be found (a "Could not open device" error appears), the most common cause is that lighting is still enabled in the vendor Control Center — go back to Section 1.
+- If the app already holds the device lock (e.g. it was started via the Auto-Start task, or the vendor service released the interface), it starts silently.
+- If the vendor service is holding the interface, you'll get the fix dialog described in Section 1. Choosing **Yes** triggers one UAC prompt, a brief vendor-service restart, and the app relaunches locked. Choosing **No** lets the app run anyway, but the vendor software may override your lighting at random moments.
+- If the app is launched with administrator rights and finds the interface taken, it fixes the situation automatically with no dialog at all — this is exactly what the Auto-Start task does at every login.
+
+All user-facing dialogs are shown in both English and Turkish.
 
 ---
 
@@ -60,6 +62,7 @@ If the keyboard can't be found (a "Could not open device" error appears), the mo
 - **Stop (Turn Off Lights)** — stops the current effect and turns the keyboard off.
 - **Brightness** — a slider at the bottom, always visible regardless of which mode is active. Scales the overall output brightness (0–100%).
 - **Active Mode** label — shows which effect is currently running.
+- **Auto-Start at Login** button — shows the current state (ON/OFF) and toggles it. Turning it ON installs a Windows Scheduled Task ("Better RGB by TheYamo") that launches the app with administrator rights at every login, so the device lock is taken silently with no UAC prompts. Turning it OFF removes the task. Creating or removing the task itself requires one administrator approval.
 
 Minimizing the window sends it to the system tray (the hidden icons area near the clock) instead of the taskbar — the app keeps running in the background. Double-click the tray icon to bring the window back, or right-click it for an Open/Exit menu.
 
@@ -123,12 +126,24 @@ Settings:
 - **Density** — affects the Diagonal Streaks and Laser Sweep styles: how many lines are active at once.
 - **Color Count** — 1 to 3, same click-to-assign system as Rain.
 
+### Static
+A motionless layout: the keyboard is split into colored zones of your choice.
+- **Horizontal / Vertical** — pick the split direction. Horizontal stacks up to **6** bands from top to bottom; Vertical places up to **10** bands side by side.
+- **Zones** — slider selecting how many zones the keyboard is divided into (the maximum depends on the chosen direction).
+- **Zone selector + Pick Color** — choose a zone from the dropdown, then assign its color. Repeat for each zone.
+
 ---
 
 ## 6. Troubleshooting
 
-**"Could not open device" on startup.**
-Lighting is still enabled in the vendor Control Center — disable it there (Section 1) and try again.
+**"Could not open the keyboard device" on startup.**
+The supported RGB interface (VID_048D / PID_600B, ITE8291) wasn't found on this machine. This app targets that specific controller; on a different keyboard/controller it cannot run.
+
+**The Control Center's keyboard-lighting page doesn't load.**
+Expected while this app is running — the device lock (Section 1) prevents the vendor software from opening the RGB interface. Close this app and the vendor's lighting page works again.
+
+**Lighting randomly turned off / got replaced by a vendor color (older versions).**
+This was the signature of the vendor service overriding the interface, and it's what the v2.2 exclusive lock eliminates. If you still see it on v2.2, the app is probably running without the lock (you declined the fix dialog, or the service grabbed the interface first). Restart the app and accept the fix, or enable Auto-Start at Login for a permanent silent fix.
 
 **Keyboard lighting stops responding entirely, including to the vendor software.**
 The keyboard's embedded controller has locked up — this is a known hardware quirk, not data corruption or permanent damage. To recover:
