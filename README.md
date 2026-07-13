@@ -154,6 +154,12 @@ The released executable is **unsigned** — this is a small open-source project,
 
 If you prefer not to trust a prebuilt binary at all, the project is fully open source — build it yourself from this repository (see the manual, Section 2).
 
+## License
+
+This project is released under the **MIT License** — see the [LICENSE](LICENSE) file. Use it, modify it, redistribute it, ship it in your own projects; just keep the copyright notice.
+
+The bundled [hidapi](https://github.com/libusb/hidapi) library (in the `hidapi/` folder, including this project's small exclusive-open patch to `windows/hid.c`) is used and redistributed under hidapi's **BSD 3-Clause** license option; its original license files are preserved inside that folder.
+
 ## Disclaimer
 
 This project is the result of independent reverse-engineering for personal/interoperability use. It is not affiliated with, endorsed by, or supported by the laptop's manufacturer or ITE Tech. Inc. Use at your own risk — direct HID communication with embedded controllers carries a small risk of triggering unexpected firmware states (see "Challenges" above); this hasn't caused any permanent damage in the course of this project, but there are no guarantees.
