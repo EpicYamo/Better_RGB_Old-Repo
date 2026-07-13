@@ -211,8 +211,21 @@ static HWND g_panelStatic[MAX_PANEL_CTRLS]; static int g_panelStaticCount = 0;
 
 static CRITICAL_SECTION g_deviceLock;
 
+static char g_logPath[MAX_PATH] = "";
+static char g_cfgPath[MAX_PATH] = "";
+static LONG g_cfgMode = -1;
+static int g_startupLaunch = 0;
+
+static void build_sibling_path(char *dst, const char *name) {
+    GetModuleFileNameA(NULL, dst, MAX_PATH);
+    char *p = strrchr(dst, '\\');
+    if (p) strcpy(p + 1, name);
+    else strcpy(dst, name);
+}
+
 void log_event(const char *msg) {
-    FILE *f = fopen("rgb_engine_log.txt", "a");
+    if (!g_logPath[0]) build_sibling_path(g_logPath, "rgb_engine_log.txt");
+    FILE *f = fopen(g_logPath, "a");
     if (!f) return;
     SYSTEMTIME t;
     GetLocalTime(&t);
@@ -220,6 +233,98 @@ void log_event(const char *msg) {
         t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
         (unsigned long)GetCurrentThreadId(), msg);
     fclose(f);
+}
+
+static LONG cfg_clamp(long v, long lo, long hi) {
+    if (v < lo) return (LONG)lo;
+    if (v > hi) return (LONG)hi;
+    return (LONG)v;
+}
+
+void save_config(void) {
+    if (!g_cfgPath[0]) build_sibling_path(g_cfgPath, "better_rgb.cfg");
+    FILE *f = fopen(g_cfgPath, "w");
+    if (!f) {
+        log_event("save_config: could not open config file for writing");
+        return;
+    }
+    fprintf(f, "mode=%ld\n", (long)g_activeMode);
+    fprintf(f, "brightness=%ld\n", (long)g_brightness);
+    fprintf(f, "breathColor=%ld\n", (long)g_breathColor);
+    fprintf(f, "breathSpeed=%ld\n", (long)g_breathSpeed);
+    fprintf(f, "breathSmooth=%ld\n", (long)g_breathSmooth);
+    fprintf(f, "waveAngle=%ld\n", (long)g_waveAngle);
+    fprintf(f, "waveSpeed=%ld\n", (long)g_waveSpeed);
+    fprintf(f, "sparkleSpeed=%ld\n", (long)g_sparkleSpeed);
+    fprintf(f, "sparkleDensity=%ld\n", (long)g_sparkleDensity);
+    fprintf(f, "reactiveColor=%ld\n", (long)g_reactiveColor);
+    fprintf(f, "reactiveRandom=%ld\n", (long)g_reactiveRandomMode);
+    fprintf(f, "reactiveDuration=%ld\n", (long)g_reactiveDuration);
+    fprintf(f, "wheelReverse=%ld\n", (long)g_wheelReverse);
+    fprintf(f, "wheelSpeed=%ld\n", (long)g_wheelSpeed);
+    fprintf(f, "lightningSpeed=%ld\n", (long)g_lightningSpeed);
+    fprintf(f, "lightningSmooth=%ld\n", (long)g_lightningSmooth);
+    fprintf(f, "lightningWidth=%ld\n", (long)g_lightningWidth);
+    fprintf(f, "lightningConcurrent=%ld\n", (long)g_lightningConcurrent);
+    fprintf(f, "flameSpeed=%ld\n", (long)g_flameSpeed);
+    fprintf(f, "flameSmooth=%ld\n", (long)g_flameSmooth);
+    fprintf(f, "rainSpeed=%ld\n", (long)g_rainSpeed);
+    fprintf(f, "rainDensity=%ld\n", (long)g_rainDensityTarget);
+    fprintf(f, "rainColorCount=%ld\n", (long)g_rainColorCount);
+    for (int i = 0; i < 5; i++) fprintf(f, "rainColor%d=%ld\n", i, (long)g_rainColors[i]);
+    fprintf(f, "matrixSpeed=%ld\n", (long)g_matrixSpeed);
+    fprintf(f, "matrixStyle=%ld\n", (long)g_matrixStyle);
+    fprintf(f, "matrixDensity=%ld\n", (long)g_matrixDensityTarget);
+    fprintf(f, "matrixColorCount=%ld\n", (long)g_matrixColorCount);
+    for (int i = 0; i < 3; i++) fprintf(f, "matrixColor%d=%ld\n", i, (long)g_matrixColors[i]);
+    fprintf(f, "staticLayout=%ld\n", (long)g_staticLayout);
+    fprintf(f, "staticZones=%ld\n", (long)g_staticZoneCount);
+    for (int i = 0; i < 10; i++) fprintf(f, "staticColor%d=%ld\n", i, (long)g_staticColors[i]);
+    fclose(f);
+}
+
+void load_config(void) {
+    if (!g_cfgPath[0]) build_sibling_path(g_cfgPath, "better_rgb.cfg");
+    FILE *f = fopen(g_cfgPath, "r");
+    if (!f) return;
+    char key[64];
+    long v;
+    while (fscanf(f, " %63[^=]=%ld", key, &v) == 2) {
+        if (!strcmp(key, "mode")) g_cfgMode = cfg_clamp(v, -1, MODE_COUNT - 1);
+        else if (!strcmp(key, "brightness")) g_brightness = cfg_clamp(v, 0, 100);
+        else if (!strcmp(key, "breathColor")) g_breathColor = (COLORREF)v;
+        else if (!strcmp(key, "breathSpeed")) g_breathSpeed = cfg_clamp(v, 1, 40);
+        else if (!strcmp(key, "breathSmooth")) g_breathSmooth = cfg_clamp(v, 2, 150);
+        else if (!strcmp(key, "waveAngle")) g_waveAngle = cfg_clamp(v, 0, 359);
+        else if (!strcmp(key, "waveSpeed")) g_waveSpeed = cfg_clamp(v, 1, 20);
+        else if (!strcmp(key, "sparkleSpeed")) g_sparkleSpeed = cfg_clamp(v, 1, 10);
+        else if (!strcmp(key, "sparkleDensity")) g_sparkleDensity = cfg_clamp(v, 3, 20);
+        else if (!strcmp(key, "reactiveColor")) g_reactiveColor = (COLORREF)v;
+        else if (!strcmp(key, "reactiveRandom")) g_reactiveRandomMode = v ? 1 : 0;
+        else if (!strcmp(key, "reactiveDuration")) g_reactiveDuration = (v == 10 || v == 45) ? (LONG)v : 20;
+        else if (!strcmp(key, "wheelReverse")) g_wheelReverse = v ? 1 : 0;
+        else if (!strcmp(key, "wheelSpeed")) g_wheelSpeed = cfg_clamp(v, 1, 20);
+        else if (!strcmp(key, "lightningSpeed")) g_lightningSpeed = cfg_clamp(v, 1, 20);
+        else if (!strcmp(key, "lightningSmooth")) g_lightningSmooth = cfg_clamp(v, 1, 40);
+        else if (!strcmp(key, "lightningWidth")) g_lightningWidth = cfg_clamp(v, 1, 4);
+        else if (!strcmp(key, "lightningConcurrent")) g_lightningConcurrent = cfg_clamp(v, 1, 4);
+        else if (!strcmp(key, "flameSpeed")) g_flameSpeed = cfg_clamp(v, 1, 20);
+        else if (!strcmp(key, "flameSmooth")) g_flameSmooth = cfg_clamp(v, 1, 40);
+        else if (!strcmp(key, "rainSpeed")) g_rainSpeed = cfg_clamp(v, 1, 20);
+        else if (!strcmp(key, "rainDensity")) g_rainDensityTarget = cfg_clamp(v, 1, 5);
+        else if (!strcmp(key, "rainColorCount")) g_rainColorCount = cfg_clamp(v, 1, 5);
+        else if (!strncmp(key, "rainColor", 9) && key[9] >= '0' && key[9] <= '4' && !key[10]) g_rainColors[key[9] - '0'] = (COLORREF)v;
+        else if (!strcmp(key, "matrixSpeed")) g_matrixSpeed = cfg_clamp(v, 1, 20);
+        else if (!strcmp(key, "matrixStyle")) g_matrixStyle = cfg_clamp(v, 0, 3);
+        else if (!strcmp(key, "matrixDensity")) g_matrixDensityTarget = cfg_clamp(v, 1, 5);
+        else if (!strcmp(key, "matrixColorCount")) g_matrixColorCount = cfg_clamp(v, 1, 3);
+        else if (!strncmp(key, "matrixColor", 11) && key[11] >= '0' && key[11] <= '2' && !key[12]) g_matrixColors[key[11] - '0'] = (COLORREF)v;
+        else if (!strcmp(key, "staticLayout")) g_staticLayout = cfg_clamp(v, 0, 1);
+        else if (!strcmp(key, "staticZones")) g_staticZoneCount = cfg_clamp(v, 1, 10);
+        else if (!strncmp(key, "staticColor", 11) && key[11] >= '0' && key[11] <= '9' && !key[12]) g_staticColors[key[11] - '0'] = (COLORREF)v;
+    }
+    fclose(f);
+    log_event("load_config: settings restored from config file");
 }
 
 int enter_custom_mode(void) {
@@ -432,7 +537,7 @@ static int begin_relock(void) {
     wchar_t exe[MAX_PATH];
     wchar_t cmdLine[MAX_PATH + 32];
     GetModuleFileNameW(NULL, exe, MAX_PATH);
-    _snwprintf(cmdLine, MAX_PATH + 31, L"\"%ls\" --relock %lu", exe, (unsigned long)GetCurrentProcessId());
+    _snwprintf(cmdLine, MAX_PATH + 31, L"\"%ls\" --relock %lu%ls", exe, (unsigned long)GetCurrentProcessId(), g_startupLaunch ? L" --startup" : L"");
     cmdLine[MAX_PATH + 31] = 0;
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
@@ -479,11 +584,72 @@ static int autostart_task_exists(void) {
 
 static int autostart_install(void) {
     wchar_t exe[MAX_PATH];
-    wchar_t args[1200];
+    wchar_t user[128] = L"";
+    wchar_t domain[128] = L"";
+    wchar_t account[300];
+    wchar_t tempDir[MAX_PATH];
+    wchar_t xmlPath[MAX_PATH];
     GetModuleFileNameW(NULL, exe, MAX_PATH);
-    _snwprintf(args, 1199, L"/Create /F /TN \"%ls\" /TR \"\\\"%ls\\\"\" /SC ONLOGON /RL HIGHEST", TASK_NAME, exe);
-    args[1199] = 0;
-    return run_schtasks(args) == 0 ? 0 : -1;
+    GetEnvironmentVariableW(L"USERDOMAIN", domain, 128);
+    GetEnvironmentVariableW(L"USERNAME", user, 128);
+    if (!user[0]) return -1;
+    if (domain[0]) _snwprintf(account, 299, L"%ls\\%ls", domain, user);
+    else _snwprintf(account, 299, L"%ls", user);
+    account[299] = 0;
+    if (!GetTempPathW(MAX_PATH, tempDir)) return -1;
+    _snwprintf(xmlPath, MAX_PATH - 1, L"%lsbetter_rgb_task.xml", tempDir);
+    xmlPath[MAX_PATH - 1] = 0;
+    wchar_t xml[4096];
+    _snwprintf(xml, 4095,
+        L"<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n"
+        L"<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n"
+        L"  <Triggers>\r\n"
+        L"    <LogonTrigger>\r\n"
+        L"      <Enabled>true</Enabled>\r\n"
+        L"      <UserId>%ls</UserId>\r\n"
+        L"    </LogonTrigger>\r\n"
+        L"  </Triggers>\r\n"
+        L"  <Principals>\r\n"
+        L"    <Principal id=\"Author\">\r\n"
+        L"      <UserId>%ls</UserId>\r\n"
+        L"      <LogonType>InteractiveToken</LogonType>\r\n"
+        L"      <RunLevel>HighestAvailable</RunLevel>\r\n"
+        L"    </Principal>\r\n"
+        L"  </Principals>\r\n"
+        L"  <Settings>\r\n"
+        L"    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\r\n"
+        L"    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\r\n"
+        L"    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\r\n"
+        L"    <AllowHardTerminate>false</AllowHardTerminate>\r\n"
+        L"    <StartWhenAvailable>false</StartWhenAvailable>\r\n"
+        L"    <AllowStartOnDemand>true</AllowStartOnDemand>\r\n"
+        L"    <Enabled>true</Enabled>\r\n"
+        L"    <Hidden>false</Hidden>\r\n"
+        L"    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\r\n"
+        L"    <Priority>7</Priority>\r\n"
+        L"  </Settings>\r\n"
+        L"  <Actions Context=\"Author\">\r\n"
+        L"    <Exec>\r\n"
+        L"      <Command>\"%ls\"</Command>\r\n"
+        L"      <Arguments>--startup</Arguments>\r\n"
+        L"    </Exec>\r\n"
+        L"  </Actions>\r\n"
+        L"</Task>\r\n",
+        account, account, exe);
+    xml[4095] = 0;
+    HANDLE f = CreateFileW(xmlPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) return -1;
+    unsigned short bom = 0xFEFF;
+    DWORD written = 0;
+    WriteFile(f, &bom, 2, &written, NULL);
+    WriteFile(f, xml, (DWORD)(wcslen(xml) * sizeof(wchar_t)), &written, NULL);
+    CloseHandle(f);
+    wchar_t args[MAX_PATH + 128];
+    _snwprintf(args, MAX_PATH + 127, L"/Create /F /TN \"" TASK_NAME L"\" /XML \"%ls\"", xmlPath);
+    args[MAX_PATH + 127] = 0;
+    int r = run_schtasks(args);
+    DeleteFileW(xmlPath);
+    return r == 0 ? 0 : -1;
 }
 
 static int autostart_remove(void) {
@@ -1284,6 +1450,7 @@ void start_mode(int mode) {
         SetThreadPriority(g_effectThread, THREAD_PRIORITY_TIME_CRITICAL);
     }
     set_status(mode_to_label(mode));
+    save_config();
 }
 
 void show_only(HWND *arr, int count, BOOL show) {
@@ -1807,6 +1974,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     set_status(L"Active Mode: None");
                     show_panel_for_mode(-1);
                     SendMessage(g_hComboMode, CB_SETCURSEL, (WPARAM)-1, 0);
+                    save_config();
                     break;
                 case IDC_BTN_COLOR_BREATH:
                     g_breathColor = pick_color(hwnd, g_breathColor);
@@ -1880,7 +2048,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
 
+        case WM_ENDSESSION:
+            if (wp) save_config();
+            return 0;
+
         case WM_DESTROY:
+            save_config();
             stop_current_effect();
             Shell_NotifyIcon(NIM_DELETE, &g_nid);
             PostQuitMessage(0);
@@ -1902,6 +2075,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
         autostart_apply(0);
         return 0;
     }
+    g_startupLaunch = (wcsstr(cl, L"--startup") != NULL);
+    load_config();
     int relockMode = 0;
     DWORD relockParentPid = 0;
     {
@@ -2086,8 +2261,25 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
         return 1;
     }
 
-    ShowWindow(hwnd, SW_SHOW);
-    UpdateWindow(hwnd);
+    if (g_startupLaunch) {
+        log_event("startup launch: starting hidden in the system tray");
+    } else {
+        ShowWindow(hwnd, SW_SHOW);
+        UpdateWindow(hwnd);
+    }
+
+    if (g_wheelReverse) CheckDlgButton(hwnd, IDC_CHK_WHEEL_REVERSE, BST_CHECKED);
+    CheckRadioButton(hwnd, IDC_RADIO_SHORT, IDC_RADIO_LONG,
+        g_reactiveDuration == 10 ? IDC_RADIO_SHORT : (g_reactiveDuration == 45 ? IDC_RADIO_LONG : IDC_RADIO_MEDIUM));
+    SendMessage(g_hComboMatrixStyle, CB_SETCURSEL, (WPARAM)g_matrixStyle, 0);
+    if (g_cfgMode >= 0 && g_cfgMode < MODE_COUNT) {
+        SendMessage(g_hComboMode, CB_SETCURSEL, (WPARAM)g_cfgMode, 0);
+        show_panel_for_mode((int)g_cfgMode);
+        if (g_cfgMode == MODE_RAIN) refresh_rain_color_visibility();
+        if (g_cfgMode == MODE_MATRIX) refresh_matrix_color_visibility();
+        if (g_cfgMode == MODE_STATIC) refresh_static_ui();
+        start_mode((int)g_cfgMode);
+    }
 
     HPOWERNOTIFY hPowerNotify = RegisterSuspendResumeNotification((HANDLE)hwnd, DEVICE_NOTIFY_WINDOW_HANDLE);
     if (!hPowerNotify) {

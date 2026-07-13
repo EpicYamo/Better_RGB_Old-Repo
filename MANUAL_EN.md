@@ -51,6 +51,11 @@ Double-click the exe (or run it from a terminal). No console window will appear 
 - If the app already holds the device lock (e.g. it was started via the Auto-Start task, or the vendor service released the interface), it starts silently.
 - If the vendor service is holding the interface, you'll get the fix dialog described in Section 1. Choosing **Yes** triggers one UAC prompt, a brief vendor-service restart, and the app relaunches locked; if the UAC prompt is cancelled, the app shows a warning and closes — it will not continue without the lock. Choosing **No** brings up a second, explicit warning: running in shared mode alongside the vendor service doesn't just risk your lighting being overridden — the write conflict can **lock up the keyboard's embedded controller (EC)**, which then stops responding to all software until a full power-off reset (see Troubleshooting). Only if you confirm that warning too does the app continue in shared mode; declining it exits the app.
 - If the app is launched with administrator rights and finds the interface taken, it fixes the situation automatically with no dialog at all — this is exactly what the Auto-Start task does at every login.
+- When launched by the Auto-Start task, the app starts **hidden in the system tray** — no window appears at login. Double-click the tray icon to open it.
+
+**Settings memory:** every setting — the selected mode (including Stop), brightness, and all per-effect parameters and colors — is saved automatically to `better_rgb.cfg` next to the exe (on every mode change, on Stop, and on exit/shutdown). On the next launch everything is restored and the last effect starts by itself, so after a reboot your keyboard lights up with yesterday's setup within seconds of logging in. Deleting the file resets the app to defaults.
+
+The app also writes a diagnostic log to `rgb_engine_log.txt`, likewise next to the exe — useful to include when reporting a problem.
 
 All user-facing dialogs are shown in both English and Turkish.
 
@@ -62,7 +67,7 @@ All user-facing dialogs are shown in both English and Turkish.
 - **Stop (Turn Off Lights)** — stops the current effect and turns the keyboard off.
 - **Brightness** — a slider at the bottom, always visible regardless of which mode is active. Scales the overall output brightness (0–100%).
 - **Active Mode** label — shows which effect is currently running.
-- **Auto-Start at Login** button — shows the current state (ON/OFF) and toggles it. Turning it ON installs a Windows Scheduled Task ("Better RGB by TheYamo") that launches the app with administrator rights at every login, so the device lock is taken silently with no UAC prompts. Turning it OFF removes the task. Creating or removing the task itself requires one administrator approval.
+- **Auto-Start at Login** button — shows the current state (ON/OFF) and toggles it. Turning it ON installs a Windows Scheduled Task ("Better RGB by TheYamo") that launches the app with administrator rights at every login, so the device lock is taken silently with no UAC prompts; the app starts hidden in the system tray and applies your last-used settings. The task is registered with full settings (it also runs on battery power and has no run-time limit). Turning it OFF removes the task. Creating or removing the task itself requires one administrator approval.
 
 Minimizing the window sends it to the system tray (the hidden icons area near the clock) instead of the taskbar — the app keeps running in the background. Double-click the tray icon to bring the window back, or right-click it for an Open/Exit menu.
 

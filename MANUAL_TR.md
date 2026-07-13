@@ -51,6 +51,11 @@ Exe'ye çift tıkla (ya da terminalden çalıştır). Herhangi bir konsol pencer
 - Uygulama cihaz kilidini zaten alabiliyorsa (örn. Auto-Start göreviyle başlatıldıysa ya da üretici servisi arayüzü bırakmışsa), sessizce açılır.
 - Üretici servisi arayüzü elinde tutuyorsa, Bölüm 1'de anlatılan düzeltme diyaloğunu görürsün. **Evet** dersen bir UAC onayı, kısa bir servis yeniden başlatması olur ve uygulama kilitli şekilde yeniden açılır; UAC istemi iptal edilirse uygulama bir uyarı gösterip kapanır — kilitsiz devam etmez. **Hayır** dersen ikinci, açık bir uyarı çıkar: üretici servisiyle paylaşımlı modda çalışmak yalnızca aydınlatma ayarlarının üzerine yazılması riskini değil, yazma çakışması nedeniyle **klavyenin gömülü kontrolcüsünün (EC) kilitlenmesi** riskini de taşır — bu durumda klavye aydınlatması, tam bir güç sıfırlaması yapılana kadar hiçbir yazılıma yanıt vermez (bkz. Sorun Giderme). Uygulama, ancak bu uyarıyı da onaylarsan paylaşımlı modda devam eder; reddedersen kapanır.
 - Uygulama yönetici haklarıyla başlatılmışsa ve arayüzün kapılmış olduğunu görürse, hiç diyalog göstermeden durumu kendisi düzeltir — Auto-Start görevinin her oturum açılışında yaptığı tam olarak budur.
+- Auto-Start göreviyle başlatıldığında uygulama **sistem tepsisinde gizli** başlar — oturum açılışında pencere görünmez. Açmak için tray simgesine çift tıkla.
+
+**Ayar hafızası:** tüm ayarlar — seçili mod (Stop dahil), parlaklık ve her efektin bütün parametreleri ile renkleri — exe'nin yanındaki `better_rgb.cfg` dosyasına otomatik kaydedilir (her mod değişiminde, Stop'a basılınca ve çıkışta/kapanışta). Bir sonraki açılışta her şey geri yüklenir ve son efekt kendiliğinden başlar; yani yeniden başlatma sonrası klavyen, oturum açtıktan saniyeler sonra dünkü düzeninle yanar. Dosyayı silmek uygulamayı varsayılanlara döndürür.
+
+Uygulama ayrıca `rgb_engine_log.txt` adlı bir tanılama günlüğünü de yine exe'nin yanına yazar — bir sorun bildirirken bu dosyayı eklemek faydalıdır.
 
 Kullanıcıya gösterilen tüm diyaloglar hem İngilizce hem Türkçe'dir.
 
@@ -62,7 +67,7 @@ Kullanıcıya gösterilen tüm diyaloglar hem İngilizce hem Türkçe'dir.
 - **Stop (Turn Off Lights)** — mevcut efekti durdurur ve klavyeyi kapatır.
 - **Brightness** — alttaki kaydırıcı, hangi mod aktif olursa olsun her zaman görünür. Genel çıktı parlaklığını (0-100%) ölçekler.
 - **Active Mode** yazısı — şu an hangi efektin çalıştığını gösterir.
-- **Auto-Start at Login** düğmesi — mevcut durumu (ON/OFF) gösterir ve değiştirir. AÇIK yapmak, her oturum açılışında uygulamayı yönetici haklarıyla başlatan bir Windows Zamanlanmış Görevi ("Better RGB by TheYamo") kurar; böylece cihaz kilidi her girişte UAC sorusu olmadan sessizce alınır. KAPALI yapmak görevi kaldırır. Görevin kurulması/kaldırılması işleminin kendisi bir kez yönetici onayı ister.
+- **Auto-Start at Login** düğmesi — mevcut durumu (ON/OFF) gösterir ve değiştirir. AÇIK yapmak, her oturum açılışında uygulamayı yönetici haklarıyla başlatan bir Windows Zamanlanmış Görevi ("Better RGB by TheYamo") kurar; böylece cihaz kilidi her girişte UAC sorusu olmadan sessizce alınır, uygulama sistem tepsisinde gizli başlar ve son kullanılan ayarları uygular. Görev tam ayarlarla kaydedilir (pil gücünde de çalışır, çalışma süresi limiti yoktur). KAPALI yapmak görevi kaldırır. Görevin kurulması/kaldırılması işleminin kendisi bir kez yönetici onayı ister.
 
 Pencereyi küçültmek, onu görev çubuğu yerine sistem tepsisine (saat yanındaki gizli simgeler alanı) gönderir — uygulama arka planda çalışmaya devam eder. Tray simgesine çift tıklayarak pencereyi geri getirebilir, ya da sağ tıklayarak Aç/Çıkış menüsüne ulaşabilirsin.
 
