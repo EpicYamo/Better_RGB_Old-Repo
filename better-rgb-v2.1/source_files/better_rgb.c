@@ -45,6 +45,7 @@ static const GUID GUID_DEVINTERFACE_HID_LOCAL =
 #define IDC_SLIDER_BRIGHT    202
 #define IDC_STATIC_STATUS    203
 #define IDC_BTN_AUTOSTART    205
+#define IDT_TRAY_RETRY       3
 
 #define IDC_BTN_COLOR_BREATH 210
 #define IDC_SWATCH_BREATH    211
@@ -181,6 +182,8 @@ static volatile LONG g_staticActiveZone = 0;
 static HWND g_btnStaticHoriz, g_btnStaticVert, g_hSliderStaticZones, g_hComboStaticZoneSel, g_btnStaticColor;
 
 #define WM_TRAYICON (WM_USER + 1)
+static UINT g_msgTaskbarCreated;
+static int g_trayRetries = 0;
 #define IDC_TRAY_RESTORE 900
 #define IDC_TRAY_EXIT    901
 
@@ -1644,6 +1647,13 @@ void refresh_static_ui(void) {
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (g_msgTaskbarCreated && msg == g_msgTaskbarCreated) {
+        if (Shell_NotifyIcon(NIM_ADD, &g_nid)) {
+            KillTimer(hwnd, IDT_TRAY_RETRY);
+            log_event("tray icon re-added after TaskbarCreated broadcast");
+        }
+        return 0;
+    }
     switch (msg) {
         case WM_CREATE: {
             HICON hAppIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_APPICON));
@@ -1657,7 +1667,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_nid.uCallbackMessage = WM_TRAYICON;
             g_nid.hIcon = hAppIcon;
             wcscpy(g_nid.szTip, L"Better RGB by TheYamo");
-            Shell_NotifyIcon(NIM_ADD, &g_nid);
+            g_msgTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+            ChangeWindowMessageFilterEx(hwnd, g_msgTaskbarCreated, MSGFLT_ALLOW, NULL);
+            if (!Shell_NotifyIcon(NIM_ADD, &g_nid)) {
+                log_event("tray icon add failed (taskbar not ready yet), scheduling retries");
+                g_trayRetries = 0;
+                SetTimer(hwnd, IDT_TRAY_RETRY, 2000, NULL);
+            }
 
             HFONT hFont = CreateFont(16,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
                 DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,
@@ -2006,6 +2022,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
 
+        case WM_TIMER:
+            if (wp == IDT_TRAY_RETRY) {
+                if (Shell_NotifyIcon(NIM_ADD, &g_nid)) {
+                    KillTimer(hwnd, IDT_TRAY_RETRY);
+                    log_event("tray icon added on retry");
+                } else if (++g_trayRetries >= 30) {
+                    KillTimer(hwnd, IDT_TRAY_RETRY);
+                    log_event("tray icon retries exhausted");
+                }
+            }
+            return 0;
+
         case WM_SYSCOMMAND:
             if ((wp & 0xFFF0) == SC_MINIMIZE) {
                 ShowWindow(hwnd, SW_HIDE);
@@ -2053,6 +2081,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
 
         case WM_DESTROY:
+            KillTimer(hwnd, IDT_TRAY_RETRY);
             save_config();
             stop_current_effect();
             Shell_NotifyIcon(NIM_DELETE, &g_nid);
