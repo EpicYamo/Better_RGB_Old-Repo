@@ -6,9 +6,9 @@ Tongfang/ITE8291 tabanlı klavyeler (VID_048D, PID_600B) için özel per-key RGB
 
 ## 1. Üretici yazılımıyla birlikte nasıl çalışır (v2.2 cihaz kilidi)
 
-Bu uygulama, klavyenin USB RGB arayüzüyle doğrudan konuşuyor. Üreticinin kendi servisi ("GCUBridge" / Kontrol Merkezi) de aynı arayüzü kullanıyor ve — zor yoldan keşfedildiği üzere — kendi seçili aydınlatma durumunu belirli aralıklarla EC'ye yeniden yazarak başka bir programın ayarladığı her şeyi sessizce eziyor.
+Bu uygulama, klavyenin USB RGB arayüzüyle doğrudan konuşuyor. Üreticinin kendi servisi ("GCUBridge" / Kontrol Merkezi) de aynı arayüzü kullanıyor ve — zor yoldan keşfedildiği üzere — kendi seçili aydınlatma durumunu belirli aralıklarla EC'ye yeniden göndererek başka bir programın ayarladığı her şeyin üzerine sessizce yazıyor.
 
-v2.2'den itibaren uygulama bunu sürücü seviyesinde çözüyor: klavyenin RGB arayüzünü **paylaşımsız (exclusive)** açıyor. Uygulama çalıştığı sürece başka hiçbir process (üretici servisi dahil) o arayüzü açamıyor; dolayısıyla ışıklarını hiçbir şey ezemiyor.
+v2.2'den itibaren uygulama bunu sürücü seviyesinde çözüyor: klavyenin RGB arayüzünü **paylaşımsız (exclusive)** açıyor. Uygulama çalıştığı sürece başka hiçbir process (üretici servisi dahil) o arayüzü açamıyor; dolayısıyla aydınlatma ayarlarının üzerine hiçbir şey yazamıyor.
 
 Pratikte bunun anlamı:
 
@@ -49,7 +49,7 @@ gcc better_rgb.c resource.o hidapi\windows\hid.c -Ihidapi\hidapi -o "Better RGB 
 Exe'ye çift tıkla (ya da terminalden çalıştır). Herhangi bir konsol penceresi açılmaz — bu normal, pencereli bir uygulama.
 
 - Uygulama cihaz kilidini zaten alabiliyorsa (örn. Auto-Start göreviyle başlatıldıysa ya da üretici servisi arayüzü bırakmışsa), sessizce açılır.
-- Üretici servisi arayüzü elinde tutuyorsa, Bölüm 1'de anlatılan düzeltme diyaloğunu görürsün. **Evet** dersen bir UAC onayı, kısa bir servis yeniden başlatması olur ve uygulama kilitli şekilde yeniden açılır. **Hayır** dersen uygulama yine çalışır, ama üretici yazılımı ışıklarını rastgele anlarda ezebilir.
+- Üretici servisi arayüzü elinde tutuyorsa, Bölüm 1'de anlatılan düzeltme diyaloğunu görürsün. **Evet** dersen bir UAC onayı, kısa bir servis yeniden başlatması olur ve uygulama kilitli şekilde yeniden açılır; UAC istemi iptal edilirse uygulama bir uyarı gösterip kapanır — kilitsiz devam etmez. **Hayır** dersen ikinci, açık bir uyarı çıkar: üretici servisiyle paylaşımlı modda çalışmak yalnızca aydınlatma ayarlarının üzerine yazılması riskini değil, yazma çakışması nedeniyle **klavyenin gömülü kontrolcüsünün (EC) kilitlenmesi** riskini de taşır — bu durumda klavye aydınlatması, tam bir güç sıfırlaması yapılana kadar hiçbir yazılıma yanıt vermez (bkz. Sorun Giderme). Uygulama, ancak bu uyarıyı da onaylarsan paylaşımlı modda devam eder; reddedersen kapanır.
 - Uygulama yönetici haklarıyla başlatılmışsa ve arayüzün kapılmış olduğunu görürse, hiç diyalog göstermeden durumu kendisi düzeltir — Auto-Start görevinin her oturum açılışında yaptığı tam olarak budur.
 
 Kullanıcıya gösterilen tüm diyaloglar hem İngilizce hem Türkçe'dir.
@@ -136,6 +136,9 @@ Hareketsiz bir düzen: klavye, senin belirlediğin renkli bölgelere ayrılır.
 
 ## 6. Sorun Giderme
 
+**Windows uygulamayı engelliyor: "Windows protected your PC" ya da "This app may be unsafe".**
+Çalıştırılabilir dosya imzasız (küçük bir açık kaynak proje, ücretli kod imzalama sertifikası yok) ve her derleme, hiçbir itibarı olmayan yepyeni bir dosya. **SmartScreen** uyarısında *More info → Run anyway* seçeneğine tıkla. Engelleyen **Smart App Control** ise (bazı yeni Windows 11 kurulumlarında varsayılan olarak açık gelir), maalesef uygulama bazlı istisna yok — SAC yalnızca genel olarak kapatılabilir (Ayarlar → Gizlilik ve güvenlik → Windows Güvenliği → Uygulama ve tarayıcı denetimi → Smart App Control → Kapalı; bir kez kapatılınca Windows yeniden kurulmadan tekrar açılamadığını unutma). Uygulamanın yaptığı servis yeniden başlatma, Zamanlanmış Görev kurma ve kendini yönetici olarak yeniden başlatma işlemleri, imzasız bir dosyayı bu filtrelere şüpheli gösteren şeylerin ta kendisi — bu davranışlar Bölüm 1'de belgelenmiştir ve kaynak kod açıktır; hazır exe'ye güvenmek istemezsen uygulamayı kendin de derleyebilirsin (Bölüm 2).
+
 **Açılışta "Could not open the keyboard device" hatası.**
 Desteklenen RGB arayüzü (VID_048D / PID_600B, ITE8291) bu makinede bulunamadı. Uygulama özel olarak bu kontrolcüyü hedefler; farklı bir klavye/kontrolcüde çalışamaz.
 
@@ -143,7 +146,7 @@ Desteklenen RGB arayüzü (VID_048D / PID_600B, ITE8291) bu makinede bulunamadı
 Bu uygulama çalışırken beklenen durum — cihaz kilidi (Bölüm 1), üretici yazılımının RGB arayüzünü açmasını engelliyor. Bu uygulamayı kapattığında üreticinin aydınlatma sayfası tekrar çalışır.
 
 **Işıklar kendiliğinden sönüyor / yerine üreticinin rengi geliyordu (eski sürümler).**
-Bu, üretici servisinin arayüzü ezmesinin tipik belirtisiydi ve v2.2'deki exclusive kilidin ortadan kaldırdığı şey tam olarak bu. v2.2'de hâlâ görüyorsan, uygulama muhtemelen kilitsiz çalışıyordur (düzeltme diyaloğunu reddettin ya da servis arayüzü önce kaptı). Uygulamayı yeniden başlatıp düzeltmeyi kabul et, ya da kalıcı sessiz çözüm için Auto-Start at Login'i aç.
+Bu, üretici servisinin arayüze müdahale etmesinin tipik belirtisiydi ve v2.2'deki exclusive kilidin ortadan kaldırdığı şey tam olarak bu. v2.2'de hâlâ görüyorsan, uygulama muhtemelen kilitsiz çalışıyordur (düzeltme diyaloğunu reddettin ya da servis arayüzü önce kaptı). Uygulamayı yeniden başlatıp düzeltmeyi kabul et, ya da kalıcı sessiz çözüm için Auto-Start at Login'i aç.
 
 **Klavye ışıkları hem bu uygulamaya hem üretici yazılımına tepki vermemeye başlıyor.**
 Klavyenin gömülü kontrolcüsü kilitlenmiş — bu bilinen bir donanımsal tuhaflık, veri bozulması ya da kalıcı hasar değil. Kurtarmak için:

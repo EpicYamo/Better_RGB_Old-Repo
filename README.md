@@ -95,7 +95,8 @@ With the lock held, the vendor service physically cannot touch the RGB interface
 One problem remains: the service grabs the interface at boot, before the user can launch anything. v2.2 handles this in layers:
 
 - If the app starts **elevated** and finds the interface taken, it silently restarts the vendor service via the Service Control Manager, snatches the exclusive lock in the gap, and lets the service come back up — locked out of RGB, fully functional otherwise. The vendor service is located by name (with a fallback scan of installed services), since rebrands of this chassis may ship it under different names.
-- If the app starts **unelevated** and finds the interface taken, it explains the situation in a bilingual (English/Turkish) dialog and offers to relaunch itself elevated to perform the same fix — one UAC prompt.
+- If the app starts **unelevated** and finds the interface taken, it explains the situation in a bilingual (English/Turkish) dialog and offers to relaunch itself elevated to perform the same fix — one UAC prompt. Declining triggers a second explicit warning, because running shared alongside the vendor service risks the EC lockup described in "Challenges"; shared mode is only entered after that second confirmation.
+- The elevated relock instance itself never runs shared: it retries the exclusive open with a progressive backoff (1–5 s), and if the lock still cannot be acquired it restores the vendor service, reports the failure, and refuses to start.
 - An **Auto-Start at Login** button installs a Scheduled Task that launches the app elevated at every login (`/SC ONLOGON /RL HIGHEST`), making the whole dance invisible: no UAC prompts, no dialogs, the lock is taken silently every boot.
 
 ## Challenges along the way
@@ -141,6 +142,15 @@ All effects run on a background thread, computed entirely on the host and stream
 ## What's next
 
 A frame-by-frame custom animation editor is planned, letting the user design their own sequences directly rather than picking from preset effects.
+
+## A note on Windows security warnings (SmartScreen / Smart App Control)
+
+The released executable is **unsigned** — this is a small open-source project, and code-signing certificates from a trusted CA are a paid, identity-verified service. Every fresh build also has a brand-new file hash with zero reputation. As a result:
+
+- **Microsoft Defender SmartScreen** may show "Windows protected your PC" on first launch. Click *More info → Run anyway*.
+- **Smart App Control** (enabled by default on some new Windows 11 installations) may block the app entirely with "This app may be unsafe", with no per-app exception possible. The app legitimately does things that look suspicious to an unsigned-binary classifier: it restarts a Windows service (to take the device lock), creates a Scheduled Task (the Auto-Start feature), and relaunches itself elevated. SAC can only be turned off globally (Settings → Privacy & security → Windows Security → App & browser control → Smart App Control), and note that once turned off it cannot be re-enabled without reinstalling Windows.
+
+If you prefer not to trust a prebuilt binary at all, the project is fully open source — build it yourself from this repository (see the manual, Section 2).
 
 ## Disclaimer
 

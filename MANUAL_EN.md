@@ -49,7 +49,7 @@ gcc better_rgb.c resource.o hidapi\windows\hid.c -Ihidapi\hidapi -o "Better RGB 
 Double-click the exe (or run it from a terminal). No console window will appear — this is a normal windowed application.
 
 - If the app already holds the device lock (e.g. it was started via the Auto-Start task, or the vendor service released the interface), it starts silently.
-- If the vendor service is holding the interface, you'll get the fix dialog described in Section 1. Choosing **Yes** triggers one UAC prompt, a brief vendor-service restart, and the app relaunches locked. Choosing **No** lets the app run anyway, but the vendor software may override your lighting at random moments.
+- If the vendor service is holding the interface, you'll get the fix dialog described in Section 1. Choosing **Yes** triggers one UAC prompt, a brief vendor-service restart, and the app relaunches locked; if the UAC prompt is cancelled, the app shows a warning and closes — it will not continue without the lock. Choosing **No** brings up a second, explicit warning: running in shared mode alongside the vendor service doesn't just risk your lighting being overridden — the write conflict can **lock up the keyboard's embedded controller (EC)**, which then stops responding to all software until a full power-off reset (see Troubleshooting). Only if you confirm that warning too does the app continue in shared mode; declining it exits the app.
 - If the app is launched with administrator rights and finds the interface taken, it fixes the situation automatically with no dialog at all — this is exactly what the Auto-Start task does at every login.
 
 All user-facing dialogs are shown in both English and Turkish.
@@ -135,6 +135,9 @@ A motionless layout: the keyboard is split into colored zones of your choice.
 ---
 
 ## 6. Troubleshooting
+
+**Windows blocks the app: "Windows protected your PC" or "This app may be unsafe".**
+The executable is unsigned (small open-source project, no paid code-signing certificate), and each build is a brand-new file with no reputation. For a **SmartScreen** warning, click *More info → Run anyway*. If **Smart App Control** blocks it (default on some new Windows 11 installations), there is unfortunately no per-app exception — SAC can only be disabled globally (Settings → Privacy & security → Windows Security → App & browser control → Smart App Control → Off; note it cannot be re-enabled without reinstalling Windows). The service restart, Scheduled Task and self-elevation the app performs are exactly what makes an unsigned binary look suspicious to these filters — the behavior is documented in Section 1 and the source is public, so you can also build the app yourself (Section 2) instead of trusting the prebuilt exe.
 
 **"Could not open the keyboard device" on startup.**
 The supported RGB interface (VID_048D / PID_600B, ITE8291) wasn't found on this machine. This app targets that specific controller; on a different keyboard/controller it cannot run.

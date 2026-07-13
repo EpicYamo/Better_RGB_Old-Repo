@@ -398,29 +398,60 @@ static int start_vendor_service(const char *name) {
     return ok;
 }
 
-static int fix_lock_now(void) {
+static void restart_vendor_service_if_found(void) {
+    char svcName[256];
+    char lb[384];
+    if (find_vendor_service(svcName, sizeof(svcName))) {
+        start_vendor_service(svcName);
+        sprintf(lb, "relock: vendor service '%s' restarted", svcName);
+        log_event(lb);
+    } else {
+        log_event("relock: vendor service not found for restart");
+    }
+}
+
+static int begin_relock(void) {
     char svcName[256];
     char lb[384];
     if (!find_vendor_service(svcName, sizeof(svcName))) {
-        log_event("fix_lock: vendor service not found, cannot fix automatically");
+        log_event("relock: vendor service not found, cannot fix automatically");
         return -1;
     }
-    sprintf(lb, "fix_lock: stopping vendor service '%s'", svcName);
+    sprintf(lb, "relock: stopping vendor service '%s'", svcName);
     log_event(lb);
     if (stop_vendor_service(svcName) < 0) {
-        log_event("fix_lock: could not stop vendor service");
+        log_event("relock: could not stop vendor service");
         return -1;
     }
     EnterCriticalSection(&g_deviceLock);
-    if (g_h) hid_close(g_h);
-    g_h = hid_open_path(DEVICE_PATH);
-    int ok = (g_h && enter_custom_mode() == 0) ? 0 : -1;
+    if (g_h) {
+        hid_close(g_h);
+        g_h = NULL;
+    }
     LeaveCriticalSection(&g_deviceLock);
-    sprintf(lb, "fix_lock: exclusive reopen result=%s, restarting vendor service '%s'",
-        ok == 0 ? "ok" : "FAIL", svcName);
-    log_event(lb);
-    start_vendor_service(svcName);
-    return ok;
+    wchar_t exe[MAX_PATH];
+    wchar_t cmdLine[MAX_PATH + 32];
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    _snwprintf(cmdLine, MAX_PATH + 31, L"\"%ls\" --relock %lu", exe, (unsigned long)GetCurrentProcessId());
+    cmdLine[MAX_PATH + 31] = 0;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    memset(&pi, 0, sizeof(pi));
+    si.cb = sizeof(si);
+    if (!CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        log_event("relock: failed to spawn fresh process, restoring previous state");
+        start_vendor_service(svcName);
+        EnterCriticalSection(&g_deviceLock);
+        g_h = hid_open_path(DEVICE_PATH);
+        if (g_h) enter_custom_mode();
+        LeaveCriticalSection(&g_deviceLock);
+        return -1;
+    }
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    log_event("relock: fresh process spawned, this instance is exiting");
+    return 0;
 }
 
 static int run_schtasks(const wchar_t *args) {
@@ -1871,12 +1902,30 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
         autostart_apply(0);
         return 0;
     }
+    int relockMode = 0;
+    DWORD relockParentPid = 0;
+    {
+        wchar_t *rl = wcsstr(cl, L"--relock");
+        if (rl) {
+            relockMode = 1;
+            relockParentPid = (DWORD)wcstoul(rl + 8, NULL, 10);
+        }
+    }
+    if (relockMode && relockParentPid) {
+        HANDLE hParent = OpenProcess(SYNCHRONIZE, FALSE, relockParentPid);
+        if (hParent) {
+            WaitForSingleObject(hParent, 5000);
+            CloseHandle(hParent);
+        }
+        Sleep(150);
+    }
 
     InitializeCriticalSection(&g_deviceLock);
     hid_init();
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
     g_h = hid_open_path(DEVICE_PATH);
     if (!g_h) {
+        if (relockMode) restart_vendor_service_if_found();
         MessageBoxW(NULL,
             L"Could not open the keyboard device (VID_048D / PID_600B).\n"
             L"Make sure this laptop has the supported ITE8291 keyboard controller.\n\n"
@@ -1886,6 +1935,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
         return 1;
     }
     if (enter_custom_mode() < 0) {
+        if (relockMode) restart_vendor_service_if_found();
         MessageBoxW(NULL,
             L"Could not enter per-key mode!\n\nPer-key moduna girilemedi!",
             L"Better RGB - Error / Hata", MB_OK|MB_ICONERROR);
@@ -1893,30 +1943,104 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
         return 1;
     }
     int excl = log_exclusive_status();
-    if (!excl) {
+    if (relockMode) {
+        char lb[128];
+        int attempt = 0;
+        while (!excl && attempt < 5) {
+            attempt++;
+            Sleep((DWORD)attempt * 1000);
+            EnterCriticalSection(&g_deviceLock);
+            if (g_h) hid_close(g_h);
+            g_h = hid_open_path(DEVICE_PATH);
+            LeaveCriticalSection(&g_deviceLock);
+            if (g_h && enter_custom_mode() == 0) {
+                excl = log_exclusive_status();
+                if (excl) {
+                    sprintf(lb, "relock: exclusive acquired on retry %d", attempt);
+                    log_event(lb);
+                }
+            }
+        }
+        restart_vendor_service_if_found();
+        if (!g_h) {
+            MessageBoxW(NULL,
+                L"The keyboard device could not be reopened after the relock attempt.\n\n"
+                L"Kilit yenileme denemesinden sonra klavye cihazi yeniden acilamadi.",
+                L"Better RGB - Error / Hata", MB_OK|MB_ICONERROR);
+            hid_exit();
+            DeleteCriticalSection(&g_deviceLock);
+            return 1;
+        }
+        if (!excl) {
+            sprintf(lb, "relock: still SHARED after %d retries, refusing to start in shared mode", attempt);
+            log_event(lb);
+            MessageBoxW(NULL,
+                L"The device lock could not be acquired: the vendor service is still holding the keyboard's RGB interface.\n"
+                L"The application will not start in shared mode. Please try launching it again.\n\n"
+                L"Cihaz kilidi alinamadi: uretici servisi klavyenin RGB arayuzunu hala elinde tutuyor.\n"
+                L"Uygulama paylasimli modda baslatilmayacak. Lutfen uygulamayi tekrar baslatmayi deneyin.",
+                L"Better RGB - Device Lock / Cihaz Kilidi", MB_OK|MB_ICONERROR);
+            hid_close(g_h);
+            hid_exit();
+            DeleteCriticalSection(&g_deviceLock);
+            return 1;
+        }
+    } else if (!excl) {
         if (is_elevated()) {
-            if (fix_lock_now() == 0) {
-                log_exclusive_status();
-            } else if (!g_h) {
-                MessageBoxW(NULL,
-                    L"Automatic fix failed and the device could not be reopened.\n\n"
-                    L"Otomatik duzeltme basarisiz oldu ve cihaz yeniden acilamadi.",
-                    L"Better RGB - Error / Hata", MB_OK|MB_ICONERROR);
+            if (begin_relock() == 0) {
                 hid_exit();
-                return 1;
+                DeleteCriticalSection(&g_deviceLock);
+                return 0;
             }
         } else {
             int ans = MessageBoxW(NULL,
                 L"The vendor service (GCUBridge / Control Center) is currently holding the keyboard's RGB interface, so it can override this app's lighting at any moment.\n\n"
                 L"Fix it now? The service will be restarted for a few seconds (fan / power functions are not affected) and the app will relaunch with the device locked. Windows will ask for administrator approval.\n\n"
-                L"Uretici servisi (GCUBridge / Kontrol Merkezi) su anda klavyenin RGB arayuzunu elinde tutuyor; bu yuzden bu uygulamanin isiklarini istedigi an ezebilir.\n\n"
-                L"Simdi duzeltilsin mi? Servis birkac saniyeligine yeniden baslatilacak (fan / guc islevleri etkilenmez) ve uygulama cihaz kilitli sekilde yeniden acilacak. Windows yonetici onayi isteyecek.",
-                L"Better RGB - Device Lock / Cihaz Kilidi", MB_YESNO|MB_ICONWARNING);
-            if (ans == IDYES && relaunch_elevated(NULL, 0) == 0) {
+                L"WARNING: choosing No means this app and the vendor service will write to the keyboard controller at the same time. Beyond your lighting being overridden, this conflict can LOCK UP the keyboard's embedded controller (EC).\n\n"
+                L"--------------------\n\n"
+                L"Uretici servisi (GCUBridge / Kontrol Merkezi) su anda klavyenin RGB arayuzunu elinde tutuyor; bu nedenle bu uygulamanin aydinlatma ayarlarinin uzerine istediginde yazabilir.\n\n"
+                L"Simdi duzeltilsin mi? Servis birkac saniyeligine yeniden baslatilacak (fan / guc islevleri etkilenmez) ve uygulama cihaz kilitli sekilde yeniden acilacak. Windows yonetici onayi isteyecek.\n\n"
+                L"UYARI: Hayir'i secerseniz bu uygulama ile uretici servisi klavye kontrolcusune ayni anda yazacak. Aydinlatma ayarlarinizin uzerine yazilmasinin otesinde, bu cakisma klavyenin gomulu kontrolcusunun (EC) KILITLENMESIYLE sonuclanabilir.",
+                L"WARNING / UYARI - Better RGB Device Lock / Cihaz Kilidi", MB_YESNO|MB_ICONWARNING);
+            if (ans == IDYES) {
+                if (relaunch_elevated(NULL, 0) == 0) {
+                    hid_close(g_h);
+                    hid_exit();
+                    DeleteCriticalSection(&g_deviceLock);
+                    return 0;
+                }
+                log_event("elevation cancelled or failed, exiting without the lock");
+                MessageBoxW(NULL,
+                    L"Device lock failed: the application was not granted administrator rights (the elevation prompt was cancelled or failed).\n"
+                    L"The application will now close. Please start it again and approve the administrator prompt.\n\n"
+                    L"--------------------\n\n"
+                    L"Cihaz kilidi basarisiz: uygulamaya yonetici haklari verilmedi (yukseltme istemi iptal edildi veya basarisiz oldu).\n"
+                    L"Uygulama simdi kapanacak. Lutfen uygulamayi tekrar baslatin ve yonetici onayini verin.",
+                    L"WARNING / UYARI - Better RGB", MB_OK|MB_ICONERROR);
                 hid_close(g_h);
                 hid_exit();
                 DeleteCriticalSection(&g_deviceLock);
-                return 0;
+                return 1;
+            }
+            if (ans == IDNO) {
+                int ans2 = MessageBoxW(NULL,
+                    L"Are you sure you want to continue in shared mode?\n\n"
+                    L"Running alongside the vendor service can LOCK UP the keyboard's embedded controller (EC). If that happens, the keyboard lighting stops responding to ALL software, and recovery requires a full power-off reset: shut down, unplug the charger, and hold the power button for about 30 seconds.\n\n"
+                    L"Yes = continue in shared mode at my own risk\n"
+                    L"No = exit the application\n\n"
+                    L"--------------------\n\n"
+                    L"Paylasimli modda devam etmek istediginizden emin misiniz?\n\n"
+                    L"Uretici servisiyle ayni anda calismak, klavyenin gomulu kontrolcusunun (EC) KILITLENMESIYLE sonuclanabilir. Bu olursa klavye aydinlatmasi HICBIR yazilima yanit vermez ve kurtarmak icin tam guc sifirlamasi gerekir: bilgisayari kapatin, sarj kablosunu cikarin ve guc dugmesine yaklasik 30 saniye basili tutun.\n\n"
+                    L"Evet = riski kabul ederek paylasimli modda devam et\n"
+                    L"Hayir = uygulamadan cik",
+                    L"WARNING / UYARI", MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2);
+                if (ans2 != IDYES) {
+                    hid_close(g_h);
+                    hid_exit();
+                    DeleteCriticalSection(&g_deviceLock);
+                    return 0;
+                }
+                log_event("user accepted shared mode despite EC lockup warning");
             }
         }
     }
