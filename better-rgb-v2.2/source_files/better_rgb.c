@@ -183,6 +183,7 @@ static HWND g_btnStaticHoriz, g_btnStaticVert, g_hSliderStaticZones, g_hComboSta
 
 #define WM_TRAYICON (WM_USER + 1)
 static UINT g_msgTaskbarCreated;
+static UINT g_msgShowInstance;
 static int g_trayRetries = 0;
 #define IDC_TRAY_RESTORE 900
 #define IDC_TRAY_EXIT    901
@@ -1697,6 +1698,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
+    if (g_msgShowInstance && msg == g_msgShowInstance) {
+        ShowWindow(hwnd, SW_SHOW);
+        ShowWindow(hwnd, SW_RESTORE);
+        SetForegroundWindow(hwnd);
+        log_event("second launch detected, window restored");
+        return 0;
+    }
     switch (msg) {
         case WM_CREATE: {
             HICON hAppIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_APPICON));
@@ -1712,6 +1720,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             wcscpy(g_nid.szTip, L"Better RGB by TheYamo");
             g_msgTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
             ChangeWindowMessageFilterEx(hwnd, g_msgTaskbarCreated, MSGFLT_ALLOW, NULL);
+            g_msgShowInstance = RegisterWindowMessageW(L"BetterRGB_TheYamo_Show");
+            ChangeWindowMessageFilterEx(hwnd, g_msgShowInstance, MSGFLT_ALLOW, NULL);
             if (!Shell_NotifyIcon(NIM_ADD, &g_nid)) {
                 log_event("tray icon add failed (taskbar not ready yet), scheduling retries");
                 g_trayRetries = 0;
@@ -2084,6 +2094,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return DefWindowProc(hwnd, msg, wp, lp);
 
+        case WM_CLOSE:
+            ShowWindow(hwnd, SW_HIDE);
+            return 0;
+
         case WM_TRAYICON:
             if (lp == WM_LBUTTONDBLCLK || lp == WM_LBUTTONUP) {
                 ShowWindow(hwnd, SW_SHOW);
@@ -2165,6 +2179,22 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
             CloseHandle(hParent);
         }
         Sleep(150);
+    }
+
+    HANDLE hSingleInstance = CreateMutexW(NULL, TRUE, L"BetterRGB_TheYamo_SingleInstance");
+    if (hSingleInstance && GetLastError() == ERROR_ALREADY_EXISTS) {
+        UINT showMsg = RegisterWindowMessageW(L"BetterRGB_TheYamo_Show");
+        HWND prev = FindWindowW(L"RGBMainWindowClass", NULL);
+        if (prev) {
+            PostMessageW(prev, showMsg, 0, 0);
+            ShowWindow(prev, SW_SHOW);
+            ShowWindow(prev, SW_RESTORE);
+            SetForegroundWindow(prev);
+        } else {
+            PostMessageW(HWND_BROADCAST, showMsg, 0, 0);
+        }
+        CloseHandle(hSingleInstance);
+        return 0;
     }
 
     InitializeCriticalSection(&g_deviceLock);
