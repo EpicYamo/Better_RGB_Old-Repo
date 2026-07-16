@@ -21,7 +21,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-#define DEVICE_PATH "\\\\?\\HID#VID_048D&PID_600B&MI_01#9&29ab79e5&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"
+static char g_devicePath[512] = "";
 
 static const GUID GUID_DEVINTERFACE_HID_LOCAL =
     { 0x4D1E55B2, 0xF16F, 0x11CF, { 0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 } };
@@ -341,7 +341,7 @@ int enter_custom_mode(void) {
 }
 
 int log_exclusive_status(void) {
-    HANDLE probe = CreateFileA(DEVICE_PATH, GENERIC_READ | GENERIC_WRITE,
+    HANDLE probe = CreateFileA(g_devicePath, GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
         FILE_FLAG_OVERLAPPED, 0);
     if (probe == INVALID_HANDLE_VALUE && GetLastError() == ERROR_SHARING_VIOLATION) {
@@ -351,6 +351,44 @@ int log_exclusive_status(void) {
     if (probe != INVALID_HANDLE_VALUE) CloseHandle(probe);
     log_event("device lock: SHARED - exclusive open not in effect; GCUBridge takeovers remain possible");
     return 0;
+}
+
+int resolve_device_path(void) {
+    char lb[640];
+    struct hid_device_info *list = hid_enumerate(0x048D, 0x0000);
+    if (!list) {
+        log_event("enum: no ITE (VID_048D) HID devices found on this system");
+        return 0;
+    }
+    struct hid_device_info *best = NULL;
+    int bestScore = 0;
+    for (struct hid_device_info *d = list; d; d = d->next) {
+        sprintf(lb, "enum: found VID=%04X PID=%04X usage_page=0x%04X usage=0x%04X iface=%d path=%.400s",
+            d->vendor_id, d->product_id, d->usage_page, d->usage,
+            d->interface_number, d->path ? d->path : "(null)");
+        log_event(lb);
+        int score = 0;
+        if (d->usage_page == 0xFF03) score = 3;
+        else if (d->interface_number == 1) score = 2;
+        if (score && d->product_id == 0x600B) score++;
+        if (score > bestScore) {
+            bestScore = score;
+            best = d;
+        }
+    }
+    int found = 0;
+    if (best && best->path) {
+        strncpy(g_devicePath, best->path, sizeof(g_devicePath) - 1);
+        g_devicePath[sizeof(g_devicePath) - 1] = 0;
+        sprintf(lb, "enum: selected VID=%04X PID=%04X usage_page=0x%04X iface=%d",
+            best->vendor_id, best->product_id, best->usage_page, best->interface_number);
+        log_event(lb);
+        found = 1;
+    } else {
+        log_event("enum: ITE device present but no vendor RGB interface (usage page 0xFF03 / MI_01) found");
+    }
+    hid_free_enumeration(list);
+    return found;
 }
 
 int reconnect_device(void) {
@@ -367,7 +405,12 @@ int reconnect_device(void) {
     hid_init();
     Sleep(20);
 
-    g_h = hid_open_path(DEVICE_PATH);
+    if (!resolve_device_path()) {
+        log_event("reconnect_device: device enumeration FAILED");
+        LeaveCriticalSection(&g_deviceLock);
+        return -1;
+    }
+    g_h = hid_open_path(g_devicePath);
     if (!g_h) {
         log_event("reconnect_device: hid_open_path FAILED");
         LeaveCriticalSection(&g_deviceLock);
@@ -551,7 +594,7 @@ static int begin_relock(void) {
         log_event("relock: failed to spawn fresh process, restoring previous state");
         start_vendor_service(svcName);
         EnterCriticalSection(&g_deviceLock);
-        g_h = hid_open_path(DEVICE_PATH);
+        g_h = hid_open_path(g_devicePath);
         if (g_h) enter_custom_mode();
         LeaveCriticalSection(&g_deviceLock);
         return -1;
@@ -720,7 +763,7 @@ DWORD WINAPI ec_monitor_thread(LPVOID p) {
         if (!h) {
 
             if (g_reconnectInProgress) { Sleep(250); continue; }
-            h = hid_open_path(DEVICE_PATH);
+            h = hid_open_path(g_devicePath);
             if (!h) { Sleep(1000); continue; }
             log_event("ec_monitor: monitor handle opened");
         }
@@ -2127,14 +2170,26 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
     InitializeCriticalSection(&g_deviceLock);
     hid_init();
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-    g_h = hid_open_path(DEVICE_PATH);
+    if (!resolve_device_path()) {
+        if (relockMode) restart_vendor_service_if_found();
+        MessageBoxW(NULL,
+            L"No compatible keyboard controller was found on this system.\n"
+            L"This app targets ITE8291-based keyboards (USB vendor ID 048D) with a per-key RGB interface.\n"
+            L"Details of every ITE device that was checked are in rgb_engine_log.txt next to the exe - please share that file when reporting this.\n\n"
+            L"Bu sistemde uyumlu bir klavye kontrolcusu bulunamadi.\n"
+            L"Bu uygulama, per-key RGB arayuzune sahip ITE8291 tabanli klavyeleri (USB vendor ID 048D) hedefler.\n"
+            L"Kontrol edilen tum ITE cihazlarinin detaylari exe'nin yanindaki rgb_engine_log.txt dosyasindadir - sorunu bildirirken lutfen bu dosyayi paylasin.",
+            L"Better RGB - Error / Hata", MB_OK|MB_ICONERROR);
+        return 1;
+    }
+    g_h = hid_open_path(g_devicePath);
     if (!g_h) {
         if (relockMode) restart_vendor_service_if_found();
         MessageBoxW(NULL,
-            L"Could not open the keyboard device (VID_048D / PID_600B).\n"
-            L"Make sure this laptop has the supported ITE8291 keyboard controller.\n\n"
-            L"Klavye cihazi acilamadi (VID_048D / PID_600B).\n"
-            L"Bu laptopta desteklenen ITE8291 klavye kontrolcusunun bulundugundan emin olun.",
+            L"The keyboard's RGB interface was found but could not be opened.\n"
+            L"Another program may be holding it exclusively. Check rgb_engine_log.txt next to the exe for details.\n\n"
+            L"Klavyenin RGB arayuzu bulundu ancak acilamadi.\n"
+            L"Baska bir program onu paylasimsiz tutuyor olabilir. Detaylar icin exe'nin yanindaki rgb_engine_log.txt dosyasina bakin.",
             L"Better RGB - Error / Hata", MB_OK|MB_ICONERROR);
         return 1;
     }
@@ -2155,7 +2210,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
             Sleep((DWORD)attempt * 1000);
             EnterCriticalSection(&g_deviceLock);
             if (g_h) hid_close(g_h);
-            g_h = hid_open_path(DEVICE_PATH);
+            g_h = hid_open_path(g_devicePath);
             LeaveCriticalSection(&g_deviceLock);
             if (g_h && enter_custom_mode() == 0) {
                 excl = log_exclusive_status();
